@@ -73,3 +73,18 @@ Run tests with coverage:
 ```bash
 poetry run pytest
 ```
+
+## Submission Validation
+
+Validate your submission file before uploading:
+
+```bash
+# Validate data/processed/submission.csv (default)
+poetry run validate-submission
+
+# Validate specific file
+poetry run validate-submission --file path/to/submission.csv
+
+# Or run directly
+python3 scripts/validate_submission.py
+```
