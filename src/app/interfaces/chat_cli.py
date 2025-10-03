@@ -64,7 +64,7 @@ def extract_api_request(text: str) -> tuple[str | None, str | None]:
 @click.command()
 @click.option("--account-id", default=None, help="ID счета для работы (опционально)")
 @click.option("--api-token", default=None, help="Finam API токен (или используйте FINAM_ACCESS_TOKEN)")
-def main(account_id: str | None, api_token: str | None) -> None:
+def main(account_id: str | None, api_token: str | None) -> None:  # noqa: C901
     """Запустить интерактивный CLI чат с AI ассистентом"""
     settings = get_settings()
 
@@ -121,7 +121,7 @@ def main(account_id: str | None, api_token: str | None) -> None:
 
             if method and path:
                 # Подставляем account_id если есть
-                if account_id and "{account_id}" in path:
+                if account_id and "{account_id}" in path:  # noqa: RUF027
                     path = path.replace("{account_id}", account_id)
 
                 # Выполняем API запрос
@@ -138,9 +138,10 @@ def main(account_id: str | None, api_token: str | None) -> None:
 
                 # Добавляем результат API в контекст
                 conversation_history.append({"role": "assistant", "content": assistant_message})
-                conversation_history.append(
-                    {"role": "user", "content": f"Результат API запроса: {api_response}\n\nПроанализируй это."}
-                )
+                conversation_history.append({
+                    "role": "user",
+                    "content": f"Результат API запроса: {api_response}\n\nПроанализируй это.",
+                })
 
                 # Получаем финальный ответ
                 response = call_llm(conversation_history, temperature=0.3)
@@ -158,4 +159,3 @@ def main(account_id: str | None, api_token: str | None) -> None:
 
 if __name__ == "__main__":
     main()
-

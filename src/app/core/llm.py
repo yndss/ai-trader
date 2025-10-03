@@ -5,9 +5,7 @@ import requests
 from .config import get_settings
 
 
-def call_llm(
-    messages: list[dict[str, str]], temperature: float = 0.2, max_tokens: int | None = None
-) -> dict[str, Any]:
+def call_llm(messages: list[dict[str, str]], temperature: float = 0.2, max_tokens: int | None = None) -> dict[str, Any]:
     """Простой вызов LLM без tools"""
     s = get_settings()
     payload: dict[str, Any] = {

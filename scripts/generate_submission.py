@@ -108,7 +108,7 @@ TIME_FRAME_H1, TIME_FRAME_H4, TIME_FRAME_D, TIME_FRAME_W, TIME_FRAME_MN
 
     for ex in examples:
         prompt += f'Вопрос: "{ex["question"]}"\n'
-        prompt += f'Ответ: {ex["type"]} {ex["request"]}\n\n'
+        prompt += f"Ответ: {ex['type']} {ex['request']}\n\n"
 
     prompt += f'Вопрос: "{question}"\n'
     prompt += "Ответ (только HTTP метод и путь, без объяснений):"

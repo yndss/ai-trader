@@ -56,20 +56,22 @@ def calculate_accuracy(
     correct_request = 0
 
     errors = []
-    type_stats = {"GET": {"tp": 0, "fp": 0, "fn": 0}, "POST": {"tp": 0, "fp": 0, "fn": 0}, "DELETE": {"tp": 0, "fp": 0, "fn": 0}}  # noqa: E501
+    type_stats = {
+        "GET": {"tp": 0, "fp": 0, "fn": 0},
+        "POST": {"tp": 0, "fp": 0, "fn": 0},
+        "DELETE": {"tp": 0, "fp": 0, "fn": 0},
+    }
 
     for uid, true_data in ground_truth.items():
         if uid not in predicted:
-            errors.append(
-                {
-                    "uid": uid,
-                    "error": "missing",
-                    "true_type": true_data["type"],
-                    "true_request": true_data["request"],
-                    "pred_type": None,
-                    "pred_request": None,
-                }
-            )
+            errors.append({
+                "uid": uid,
+                "error": "missing",
+                "true_type": true_data["type"],
+                "true_request": true_data["request"],
+                "pred_type": None,
+                "pred_request": None,
+            })
             type_stats[true_data["type"]]["fn"] += 1
             continue
 
@@ -92,18 +94,16 @@ def calculate_accuracy(
             correct += 1
             type_stats[true_type]["tp"] += 1
         else:
-            errors.append(
-                {
-                    "uid": uid,
-                    "error": "mismatch",
-                    "true_type": true_type,
-                    "true_request": true_request,
-                    "pred_type": pred_type,
-                    "pred_request": pred_request,
-                    "type_match": "yes" if type_match else "no",
-                    "request_match": "yes" if request_match else "no",
-                }
-            )
+            errors.append({
+                "uid": uid,
+                "error": "mismatch",
+                "true_type": true_type,
+                "true_request": true_request,
+                "pred_type": pred_type,
+                "pred_request": pred_request,
+                "type_match": "yes" if type_match else "no",
+                "request_match": "yes" if request_match else "no",
+            })
             if not type_match:
                 type_stats[true_type]["fn"] += 1
                 if pred_type in type_stats:
@@ -172,7 +172,7 @@ def calculate_accuracy(
     default=None,
     help="Сохранить все ошибки в CSV файл",
 )
-def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Optional[Path]) -> None:
+def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Optional[Path]) -> None:  # noqa: C901
     """Рассчитать метрику accuracy для submission файла"""
 
     click.echo("📊 Расчет метрики accuracy...")
@@ -192,26 +192,26 @@ def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Option
     accuracy, stats = calculate_accuracy(predicted, ground_truth)
 
     # Выводим результаты
-    click.echo(f"\n🎯 ОСНОВНАЯ МЕТРИКА (из evaluation.md):")
-    click.echo(f"   Accuracy = {stats['correct']}/{stats['total']} = {accuracy:.4f} ({accuracy*100:.2f}%)")
+    click.echo("\n🎯 ОСНОВНАЯ МЕТРИКА (из evaluation.md):")
+    click.echo(f"   Accuracy = {stats['correct']}/{stats['total']} = {accuracy:.4f} ({accuracy * 100:.2f}%)")
 
-    click.echo(f"\n📈 ДЕТАЛЬНАЯ СТАТИСТИКА:")
+    click.echo("\n📈 ДЕТАЛЬНАЯ СТАТИСТИКА:")
     click.echo(f"   Всего запросов:           {stats['total']}")
-    click.echo(f"   Полностью правильных:     {stats['correct']} ({accuracy*100:.2f}%)")
-    click.echo(f"   Правильный type:          {stats['correct_type']} ({stats['type_accuracy']*100:.2f}%)")
-    click.echo(f"   Правильный request:       {stats['correct_request']} ({stats['request_accuracy']*100:.2f}%)")
+    click.echo(f"   Полностью правильных:     {stats['correct']} ({accuracy * 100:.2f}%)")
+    click.echo(f"   Правильный type:          {stats['correct_type']} ({stats['type_accuracy'] * 100:.2f}%)")
+    click.echo(f"   Правильный request:       {stats['correct_request']} ({stats['request_accuracy'] * 100:.2f}%)")
     click.echo(f"   Ошибок:                   {len(stats['errors'])}")
 
     # Статистика по типам запросов
-    click.echo(f"\n📊 СТАТИСТИКА ПО ТИПАМ ЗАПРОСОВ:")
+    click.echo("\n📊 СТАТИСТИКА ПО ТИПАМ ЗАПРОСОВ:")
     click.echo(f"   {'Type':<10} {'Precision':<12} {'Recall':<12} {'F1-Score':<12}")
-    click.echo(f"   {'-'*46}")
+    click.echo(f"   {'-' * 46}")
     for method, method_stats in sorted(stats["type_stats"].items()):
         click.echo(
             f"   {method:<10} "
-            f"{method_stats['precision']:.4f} ({method_stats['precision']*100:>5.1f}%)  "
-            f"{method_stats['recall']:.4f} ({method_stats['recall']*100:>5.1f}%)  "
-            f"{method_stats['f1']:.4f} ({method_stats['f1']*100:>5.1f}%)"
+            f"{method_stats['precision']:.4f} ({method_stats['precision'] * 100:>5.1f}%)  "
+            f"{method_stats['recall']:.4f} ({method_stats['recall'] * 100:>5.1f}%)  "
+            f"{method_stats['f1']:.4f} ({method_stats['f1'] * 100:>5.1f}%)"
         )
 
     # Показываем примеры ошибок
@@ -221,7 +221,7 @@ def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Option
         for i, error in enumerate(stats["errors"][:show_errors], 1):
             click.echo(f"\n   Ошибка #{i} (uid: {error['uid']}):")
             if error["error"] == "missing":
-                click.echo(f"   ⚠️  Отсутствует в predicted файле")
+                click.echo("   ⚠️  Отсутствует в predicted файле")
                 click.echo(f"   Expected: {error['true_type']} {error['true_request']}")
             else:
                 if error["type_match"] == "no":
@@ -230,7 +230,7 @@ def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Option
                     click.echo(f"   Type:    ✓ {error['true_type']}")
 
                 if error["request_match"] == "no":
-                    click.echo(f"   Request: ✗")
+                    click.echo("   Request: ✗")
                     click.echo(f"     Predicted: {error['pred_request']}")
                     click.echo(f"     Expected:  {error['true_request']}")
                 else:
@@ -256,18 +256,16 @@ def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Option
             writer.writeheader()
 
             for error in stats["errors"]:
-                writer.writerow(
-                    {
-                        "uid": error["uid"],
-                        "error_type": error["error"],
-                        "true_type": error.get("true_type", ""),
-                        "pred_type": error.get("pred_type", ""),
-                        "true_request": error.get("true_request", ""),
-                        "pred_request": error.get("pred_request", ""),
-                        "type_match": error.get("type_match", ""),
-                        "request_match": error.get("request_match", ""),
-                    }
-                )
+                writer.writerow({
+                    "uid": error["uid"],
+                    "error_type": error["error"],
+                    "true_type": error.get("true_type", ""),
+                    "pred_type": error.get("pred_type", ""),
+                    "true_request": error.get("true_request", ""),
+                    "pred_request": error.get("pred_request", ""),
+                    "type_match": error.get("type_match", ""),
+                    "request_match": error.get("request_match", ""),
+                })
 
         click.echo(f"\n💾 Ошибки сохранены в: {save_errors}")
 
@@ -287,4 +285,3 @@ def main(pred_file: Path, true_file: Path, show_errors: int, save_errors: Option
 
 if __name__ == "__main__":
     main()
-

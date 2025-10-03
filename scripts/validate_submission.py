@@ -29,7 +29,6 @@
 from typing import Optional
 
 import click
-
 from tests.test_submission_validator import SubmissionValidator
 
 

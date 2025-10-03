@@ -29,9 +29,12 @@ class FinamAPIClient:
         self.session = requests.Session()
 
         if self.access_token:
-            self.session.headers.update({"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"})  # noqa: E501
+            self.session.headers.update({
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+            })
 
-    def execute_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    def execute_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
         """
         Выполнить HTTP запрос к Finam TradeAPI
 
@@ -83,7 +86,9 @@ class FinamAPIClient:
         """Получить биржевой стакан"""
         return self.execute_request("GET", f"/v1/instruments/{symbol}/orderbook", params={"depth": depth})
 
-    def get_candles(self, symbol: str, timeframe: str = "D", start: str | None = None, end: str | None = None) -> dict[str, Any]:  # noqa: E501
+    def get_candles(
+        self, symbol: str, timeframe: str = "D", start: str | None = None, end: str | None = None
+    ) -> dict[str, Any]:
         """Получить исторические свечи"""
         params = {"timeframe": timeframe}
         if start:
@@ -129,4 +134,3 @@ class FinamAPIClient:
     def get_session_details(self) -> dict[str, Any]:
         """Получить детали текущей сессии"""
         return self.execute_request("POST", "/v1/sessions/details")
-
