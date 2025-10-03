@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Trader AI Assistant over Finam TradeAPI"
 authors = ["Maxim Kirilyuk <werserk@inbox.ru>"]
 readme = "README.md"
-packages = [{ include = "app", from = "src" }]
+packages = [
+    { include = "app", from = "src" },
+    { include = "finam_client", from = "src" },
+]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
@@ -25,6 +28,7 @@ pytest = "^8.4.2"
 black = "^25.9.0"
 ruff = "^0.13.3"
 types-requests = "^2.32.0"
+pytest-cov = "^7.0.0"
 
 [tool.poetry.scripts]
 validate-submission = "scripts.validate_submission:main"

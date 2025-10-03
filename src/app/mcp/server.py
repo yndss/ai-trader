@@ -119,6 +119,52 @@ class AsyncFinamClient:
         token = result.get("jwt") or result.get("token")
         return bool(token)
 
+    @staticmethod
+    def _extract_payload(response: httpx.Response) -> Any:
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                return response.json()
+            except Exception:
+                return {"raw": response.text}
+        return {"raw": response.text}
+
+    def _mentions_expired_token(self, payload: Any) -> bool:
+        if isinstance(payload, dict):
+            message = str(payload.get("message", "")).lower()
+            if "token is expired" in message or "jwt token check failed" in message:
+                return True
+
+            code = payload.get("code")
+            if isinstance(code, str) and code.upper() == "UNAUTHENTICATED":
+                return True
+            if code == 13 and message:
+                return True
+
+            for value in payload.values():
+                if self._mentions_expired_token(value):
+                    return True
+
+        if isinstance(payload, list):
+            return any(self._mentions_expired_token(item) for item in payload)
+
+        return False
+
+    def _needs_token_refresh(self, response: httpx.Response, payload: Any) -> bool:
+        if response.status_code in (401, 403):
+            return True
+        if response.status_code >= 400 and self._mentions_expired_token(payload):
+            return True
+        return False
+
+    @staticmethod
+    def _ensure_error_payload(payload: Any, status_code: int) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            payload.setdefault("ok", False)
+            payload.setdefault("status", status_code)
+            return payload
+        return {"ok": False, "status": status_code, "error": payload}
+
     async def _request(
         self,
         method: str,
@@ -131,39 +177,27 @@ class AsyncFinamClient:
         if attach_auth and not self._jwt:
             await self._auto_login()
 
-        response = None
+        response: Optional[httpx.Response] = None
+        payload: Any = None
         for attempt in range(2):
             headers: Dict[str, str] = {}
             if attach_auth and self._jwt:
                 headers["Authorization"] = self._jwt
 
             response = await self._client.request(method, path, params=params, json=json, headers=headers)
+            payload = self._extract_payload(response)
 
-            if response.status_code == 401 and attach_auth:
+            if attach_auth and self._needs_token_refresh(response, payload):
                 refreshed = await self._auto_login(force=True)
                 if refreshed:
                     continue
             break
 
         assert response is not None
-        content_type = response.headers.get("content-type", "")
         ok = 200 <= response.status_code < 300
 
-        if "application/json" in content_type:
-            try:
-                payload = response.json()
-            except Exception:
-                payload = {"raw": response.text}
-        else:
-            payload = {"raw": response.text}
-
         if not ok:
-            if isinstance(payload, dict):
-                payload.setdefault("ok", False)
-                payload.setdefault("status", response.status_code)
-            else:
-                payload = {"ok": False, "status": response.status_code, "error": payload}
-            return payload
+            return self._ensure_error_payload(payload, response.status_code)
 
         return payload if isinstance(payload, dict) else {"data": payload}
 
@@ -203,8 +237,10 @@ class AsyncFinamClient:
         params: Dict[str, Any] = {}
         if start_time is not None:
             params["interval.start_time"] = start_time
+            params["interval_start"] = start_time
         if end_time is not None:
             params["interval.end_time"] = end_time
+            params["interval_end"] = end_time
         if limit is not None:
             params["limit"] = limit
         return await self._request("GET", f"/v1/accounts/{account_id}/trades", params=params or None)
@@ -220,8 +256,10 @@ class AsyncFinamClient:
         params: Dict[str, Any] = {}
         if start_time is not None:
             params["interval.start_time"] = start_time
+            params["interval_start"] = start_time
         if end_time is not None:
             params["interval.end_time"] = end_time
+            params["interval_end"] = end_time
         if limit is not None:
             params["limit"] = limit
         return await self._request("GET", f"/v1/accounts/{account_id}/transactions", params=params or None)
@@ -233,11 +271,12 @@ class AsyncFinamClient:
         params = {"account_id": account_id} if account_id else None
         return await self._request("GET", f"/v1/assets/{_norm_symbol(symbol)}", params=params)
 
-    async def get_asset_params(self, symbol: str, account_id: str) -> Dict[str, Any]:
+    async def get_asset_params(self, symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
+        params = {"account_id": account_id} if account_id else None
         return await self._request(
             "GET",
             f"/v1/assets/{_norm_symbol(symbol)}/params",
-            params={"account_id": account_id},
+            params=params,
         )
 
     async def get_options_chain(self, underlying_symbol: str) -> Dict[str, Any]:
@@ -291,8 +330,10 @@ class AsyncFinamClient:
         query: Dict[str, Any] = {"symbol": params.symbol, "timeframe": params.timeframe}
         if params.start_time is not None:
             query["interval.start_time"] = params.start_time
+            query["interval_start"] = params.start_time
         if params.end_time is not None:
             query["interval.end_time"] = params.end_time
+            query["interval_end"] = params.end_time
         if params.limit is not None:
             query["limit"] = params.limit
 
@@ -306,114 +347,28 @@ app = FastMCP("FinamTrader")
 _client = AsyncFinamClient()
 
 
-@app.tool()
-async def get_jwt_token(secret: Optional[str] = None) -> Dict[str, Any]:
-    return await _client.exchange_secret_for_jwt(secret)
+async def _auth(secret: Optional[str] = None) -> Dict[str, Any]:
+    result = await _client.exchange_secret_for_jwt(secret)
+
+    if not isinstance(result, dict):
+        return {"ok": True, "token": result, "message": "JWT обновлен"}
+
+    if result.get("ok") is False:
+        return result
+
+    payload = dict(result)
+    token = payload.get("jwt") or payload.get("token")
+    if token:
+        payload.setdefault("jwt", token)
+        payload.setdefault("token", token)
+
+    payload.setdefault("ok", True)
+    payload.setdefault("message", "JWT обновлен")
+    return payload
 
 
-@app.tool()
-async def get_token_details(token: Optional[str] = None) -> Dict[str, Any]:
-    return await _client.token_details(token)
-
-
-@app.tool()
-async def get_account(account_id: str) -> Dict[str, Any]:
-    return await _client.get_account(account_id)
-
-
-@app.tool()
-async def get_account_trades(
-    account_id: str,
-    start_time: Optional[int] = None,
-    end_time: Optional[int] = None,
-    limit: Optional[int] = None,
-) -> Dict[str, Any]:
-    return await _client.get_account_trades(account_id, start_time=start_time, end_time=end_time, limit=limit)
-
-
-@app.tool()
-async def get_account_transactions(
-    account_id: str,
-    start_time: Optional[int] = None,
-    end_time: Optional[int] = None,
-    limit: Optional[int] = None,
-) -> Dict[str, Any]:
-    return await _client.get_account_transactions(account_id, start_time=start_time, end_time=end_time, limit=limit)
-
-
-@app.tool()
-async def list_accounts_via_token_details() -> Dict[str, Any]:
-    details = await _client.token_details()
-    if details.get("ok") is False:
-        return details
-
-    raw_ids: Iterable[Any] = details.get("account_ids") or []
-    if not raw_ids and isinstance(details.get("accounts"), list):
-        raw_ids = [
-            acc.get("account_id") or acc.get("id")
-            for acc in details["accounts"]
-            if isinstance(acc, dict)
-        ]
-
-    account_ids = [account_id for account_id in raw_ids if account_id is not None]
-
-    accounts: list[Dict[str, Any]] = []
-    for account_id in account_ids:
-        if account_id is None:
-            continue
-        account = await _client.get_account(str(account_id))
-        accounts.append(account)
-
-    return {"account_ids": account_ids, "accounts": accounts, "token_details": details}
-
-
-@app.tool()
-async def get_assets() -> Dict[str, Any]:
-    return await _client.get_assets()
-
-
-@app.tool()
-async def get_asset(symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
-    return await _client.get_asset(symbol, account_id=account_id)
-
-
-@app.tool()
-async def get_asset_params(symbol: str, account_id: str) -> Dict[str, Any]:
-    return await _client.get_asset_params(symbol, account_id)
-
-
-@app.tool()
-async def get_options_chain(underlying_symbol: str) -> Dict[str, Any]:
-    return await _client.get_options_chain(underlying_symbol)
-
-
-@app.tool()
-async def get_asset_schedule(symbol: str) -> Dict[str, Any]:
-    return await _client.get_asset_schedule(symbol)
-
-
-@app.tool()
-async def get_clock() -> Dict[str, Any]:
-    return await _client.get_clock()
-
-
-@app.tool()
-async def get_exchanges() -> Dict[str, Any]:
-    return await _client.get_exchanges()
-
-
-@app.tool()
-async def get_account_orders(account_id: str) -> Dict[str, Any]:
-    return await _client.get_orders(account_id)
-
-
-@app.tool()
-async def get_order(account_id: str, order_id: str) -> Dict[str, Any]:
-    return await _client.get_order(account_id, order_id)
-
-
-@app.tool()
-async def place_order(
+async def _prepare_order(
+    *,
     account_id: str,
     symbol: str,
     quantity: Union[str, int, float],
@@ -456,38 +411,345 @@ async def place_order(
 
 
 @app.tool()
-async def cancel_order(account_id: str, order_id: str) -> Dict[str, Any]:
+async def Auth(secret: Optional[str] = None) -> Dict[str, Any]:
+    """Exchange API secret for a JWT session token.
+
+    Args:
+        secret: Optional API token override. Falls back to `FINAM_ACCESS_TOKEN` env var.
+
+    Returns:
+        Dict[str, Any]: JWT exchange result including the issued token.
+    """
+    return await _auth(secret)
+
+
+@app.tool()
+async def TokenDetails(token: Optional[str] = None) -> Dict[str, Any]:
+    """Fetch metadata for a JWT token issued by Finam TradeAPI.
+
+    Args:
+        token: JWT token to inspect. Defaults to the current session token.
+
+    Returns:
+        Dict[str, Any]: Token details such as expiry, permissions, accounts.
+    """
+    return await _client.token_details(token)
+
+
+@app.tool()
+async def GetAccount(account_id: str) -> Dict[str, Any]:
+    """Retrieve account state including balances and open positions.
+
+    Args:
+        account_id: Unique Finam account identifier.
+
+    Returns:
+        Dict[str, Any]: Account snapshot with cash, portfolio, positions.
+    """
+    return await _client.get_account(account_id)
+
+
+@app.tool()
+async def Trades(
+    account_id: str,
+    limit: Optional[int] = None,
+    interval_start: Optional[int] = None,
+    interval_end: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Get historical trades for the provided account.
+
+    Args:
+        account_id: Account identifier for trade history lookup.
+        limit: Optional number of records to return.
+        interval_start: Optional start of the period (Unix seconds).
+        interval_end: Optional end of the period (Unix seconds).
+
+    Returns:
+        Dict[str, Any]: Trade list payload mirroring API response.
+    """
+    return await _client.get_account_trades(
+        account_id,
+        start_time=interval_start,
+        end_time=interval_end,
+        limit=limit,
+    )
+
+
+@app.tool()
+async def Transactions(
+    account_id: str,
+    limit: Optional[int] = None,
+    interval_start: Optional[int] = None,
+    interval_end: Optional[int] = None,
+) -> Dict[str, Any]:
+    """List money movements and corporate actions for an account.
+
+    Args:
+        account_id: Account identifier for transaction history.
+        limit: Optional maximum number of records.
+        interval_start: Optional start of the period (Unix seconds).
+        interval_end: Optional end of the period (Unix seconds).
+
+    Returns:
+        Dict[str, Any]: Transaction collection with timestamps and amounts.
+    """
+    return await _client.get_account_transactions(
+        account_id,
+        start_time=interval_start,
+        end_time=interval_end,
+        limit=limit,
+    )
+
+
+@app.tool()
+async def GetAssets() -> Dict[str, Any]:
+    """Return the directory of instruments available via Finam TradeAPI.
+
+    Returns:
+        Dict[str, Any]: Assets listing with symbols, tickers, and metadata.
+    """
+    return await _client.get_assets()
+
+
+@app.tool()
+async def GetAsset(symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
+    """Fetch detailed information about a single instrument.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+        account_id: Optional account context to tailor attributes.
+
+    Returns:
+        Dict[str, Any]: Instrument description including board, lots, ISIN.
+    """
+    return await _client.get_asset(symbol, account_id=account_id)
+
+
+@app.tool()
+async def GetAssetParams(symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
+    """Inspect trading parameters such as margins and availability flags.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+        account_id: Optional account to personalise leverage requirements.
+
+    Returns:
+        Dict[str, Any]: Trading rules including long/short permissions and collateral.
+    """
+    return await _client.get_asset_params(symbol, account_id)
+
+
+@app.tool()
+async def OptionsChain(underlying_symbol: str) -> Dict[str, Any]:
+    """Provide the options chain for an underlying instrument.
+
+    Args:
+        underlying_symbol: Base asset in `SYMBOL@MIC` format.
+
+    Returns:
+        Dict[str, Any]: Contracts grouped by strikes, expirations, and types.
+    """
+    return await _client.get_options_chain(underlying_symbol)
+
+
+@app.tool()
+async def Schedule(symbol: str) -> Dict[str, Any]:
+    """Expose the trading sessions configured for an instrument.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+
+    Returns:
+        Dict[str, Any]: Session intervals with types and timestamps.
+    """
+    return await _client.get_asset_schedule(symbol)
+
+
+@app.tool()
+async def Clock(account_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return the current server time reported by Finam TradeAPI.
+
+    Args:
+        account_id: Optional account context (ignored, kept for compatibility).
+
+    Returns:
+        Dict[str, Any]: Timestamp payload for latency diagnostics.
+    """
+    return await _client.get_clock()
+
+
+@app.tool()
+async def Exchanges(account_id: Optional[str] = None) -> Dict[str, Any]:
+    """List supported exchanges with their MIC codes.
+
+    Args:
+        account_id: Optional account context (ignored, kept for compatibility).
+
+    Returns:
+        Dict[str, Any]: Exchange catalogue containing names and codes.
+    """
+    return await _client.get_exchanges()
+
+
+@app.tool()
+async def GetOrders(account_id: str) -> Dict[str, Any]:
+    """Retrieve active and historical orders for an account.
+
+    Args:
+        account_id: Account identifier to query orders for.
+
+    Returns:
+        Dict[str, Any]: Order states mirroring Finam API response.
+    """
+    return await _client.get_orders(account_id)
+
+
+@app.tool()
+async def GetOrder(account_id: str, order_id: str) -> Dict[str, Any]:
+    """Get a single order with executions and current status.
+
+    Args:
+        account_id: Account identifier the order belongs to.
+        order_id: Exchange order identifier.
+
+    Returns:
+        Dict[str, Any]: Order payload including timestamps and fills.
+    """
+    return await _client.get_order(account_id, order_id)
+
+
+@app.tool()
+async def CancelOrder(account_id: str, order_id: str) -> Dict[str, Any]:
+    """Submit cancellation for an existing order.
+
+    Args:
+        account_id: Account identifier linked to the order.
+        order_id: Identifier of the order to cancel.
+
+    Returns:
+        Dict[str, Any]: Cancellation outcome including final status.
+    """
     return await _client.cancel_order(account_id, order_id)
 
 
 @app.tool()
-async def get_last_quote(symbol: str) -> Dict[str, Any]:
+async def PlaceOrder(
+    account_id: str,
+    symbol: str,
+    quantity: Union[str, int, float],
+    side: Union[str, Side],
+    type: Union[str, OrderType],
+    time_in_force: Optional[Union[str, TimeInForce]] = None,
+    limit_price: Optional[Union[str, int, float]] = None,
+    stop_price: Optional[Union[str, int, float]] = None,
+    stop_condition: Optional[Union[str, StopCondition]] = None,
+    valid_before: Optional[Union[str, ValidBefore]] = None,
+    client_order_id: Optional[str] = None,
+    comment: Optional[str] = None,
+    legs: Optional[Iterable[Union[Leg, Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    """Place a new order leveraging server-side validation helpers.
+
+    Args:
+        account_id: Finam account that submits the order.
+        symbol: Instrument in `SYMBOL@MIC` format.
+        quantity: Order size in units or lots.
+        side: Buy/sell side (`Side`).
+        type: Order type (`OrderType`).
+        time_in_force: Optional order lifetime policy (`TimeInForce`).
+        limit_price: Limit value for limit/stop-limit orders.
+        stop_price: Trigger price for stop orders.
+        stop_condition: Stop evaluation condition (`StopCondition`).
+        valid_before: Optional validity constraint (`ValidBefore`).
+        client_order_id: Optional custom identifier (max 20 chars).
+        comment: Optional human-friendly note.
+        legs: Optional multi-leg composition for combos.
+
+    Returns:
+        Dict[str, Any]: Finam API response describing the created order.
+    """
+    return await _prepare_order(
+        account_id=account_id,
+        symbol=symbol,
+        quantity=quantity,
+        side=side,
+        order_type=type,
+        time_in_force=time_in_force,
+        limit_price=limit_price,
+        stop_price=stop_price,
+        stop_condition=stop_condition,
+        valid_before=valid_before,
+        client_order_id=client_order_id,
+        comment=comment,
+        legs=legs,
+    )
+
+
+@app.tool()
+async def LastQuote(symbol: str) -> Dict[str, Any]:
+    """Fetch the most recent quote snapshot for an instrument.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+
+    Returns:
+        Dict[str, Any]: Bid/ask/last data enriched with OHLC fields.
+    """
     return await _client.last_quote(symbol)
 
 
 @app.tool()
-async def get_orderbook(symbol: str, depth: int = DEFAULT_DEPTH) -> Dict[str, Any]:
+async def OrderBook(symbol: str, depth: int = DEFAULT_DEPTH) -> Dict[str, Any]:
+    """Retrieve order book levels for the instrument.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+        depth: Desired depth of book on each side.
+
+    Returns:
+        Dict[str, Any]: Ladder of bids and asks with prices and sizes.
+    """
     return await _client.orderbook(symbol, depth=depth)
 
 
 @app.tool()
-async def get_latest_trades(symbol: str) -> Dict[str, Any]:
+async def LatestTrades(symbol: str) -> Dict[str, Any]:
+    """List the latest exchange trades for the specified instrument.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+
+    Returns:
+        Dict[str, Any]: Recent trades including price, size, and side.
+    """
     return await _client.latest_trades(symbol)
 
 
 @app.tool()
-async def get_bars(
+async def Bars(
     symbol: str,
     timeframe: str,
-    start_time: Optional[int] = None,
-    end_time: Optional[int] = None,
+    interval_start: Optional[int] = None,
+    interval_end: Optional[int] = None,
     limit: Optional[int] = None,
 ) -> Dict[str, Any]:
+    """Download aggregated price bars for the instrument.
+
+    Args:
+        symbol: Instrument identifier in `SYMBOL@MIC` format.
+        timeframe: Candle timeframe string accepted by Finam API.
+        interval_start: Optional start of the period (Unix seconds).
+        interval_end: Optional end of the period (Unix seconds).
+        limit: Optional maximum number of bars.
+
+    Returns:
+        Dict[str, Any]: Bars payload containing OHLCV series.
+    """
     params = GetBarsParams(
         symbol=symbol,
         timeframe=timeframe,
-        start_time=start_time,
-        end_time=end_time,
+        start_time=interval_start,
+        end_time=interval_end,
         limit=limit,
     )
     return await _client.bars(params)

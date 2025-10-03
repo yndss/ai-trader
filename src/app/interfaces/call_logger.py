@@ -39,7 +39,11 @@ class CallLogger:
         with self._lock:
             if self._current_question is None:
                 return
-            sanitized = dict(params)
+            sanitized = {}
+            sensitive_keys = {"secret", "token", "jwt", "authorization", "password"}
+            for key, value in params.items():
+                key_lower = key.lower() if isinstance(key, str) else ""
+                sanitized[key] = "***" if key_lower in sensitive_keys else value
             self._history[self._current_question].append({"tool": tool_name, "params": sanitized})
 
     def question_history(self, question: str) -> List[Dict[str, Any]]:
@@ -48,4 +52,3 @@ class CallLogger:
 
 
 call_logger = CallLogger()
-

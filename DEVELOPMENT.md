@@ -97,7 +97,7 @@ make lint-fix       # Исправить проблемы
 ### Finam API Client
 
 ```python
-from src.app.adapters import FinamAPIClient
+from finam_client import FinamAPIClient
 
 client = FinamAPIClient(access_token="your_token")
 
