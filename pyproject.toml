@@ -13,6 +13,7 @@ requests = "^2.32.5"
 python-dotenv = "^1.1.1"
 click = "^8.1.7"
 tqdm = "^4.67.1"
+streamlit = "^1.40.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
@@ -24,6 +25,8 @@ types-requests = "^2.32.0"
 [tool.poetry.scripts]
 validate-submission = "scripts.validate_submission:main"
 generate-submission = "scripts.generate_submission:main"
+calculate-metrics = "scripts.calculate_metrics:main"
+chat-cli = "src.app.interfaces.chat_cli:main"
 
 [build-system]
 requires = ["poetry-core"]

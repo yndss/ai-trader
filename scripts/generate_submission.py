@@ -23,7 +23,32 @@ from pathlib import Path
 import click
 from tqdm import tqdm  # type: ignore[import-untyped]
 
-from src.app.llm import call_llm
+from src.app.core.llm import call_llm
+
+
+def calculate_cost(usage: dict, model: str) -> float:
+    """Рассчитать стоимость запроса на основе usage и модели"""
+    # Цены OpenRouter (примерные, в $ за 1M токенов)
+    # Источник: https://openrouter.ai/models
+    pricing = {
+        "openai/gpt-4o-mini": {"prompt": 0.15, "completion": 0.60},
+        "openai/gpt-4o": {"prompt": 2.50, "completion": 10.00},
+        "openai/gpt-3.5-turbo": {"prompt": 0.50, "completion": 1.50},
+        "anthropic/claude-3-sonnet": {"prompt": 3.00, "completion": 15.00},
+        "anthropic/claude-3-haiku": {"prompt": 0.25, "completion": 1.25},
+    }
+
+    # Получаем цены для модели (по умолчанию как для gpt-4o-mini)
+    prices = pricing.get(model, {"prompt": 0.15, "completion": 0.60})
+
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+
+    # Считаем стоимость (цена за 1M токенов)
+    prompt_cost = (prompt_tokens / 1_000_000) * prices["prompt"]
+    completion_cost = (completion_tokens / 1_000_000) * prices["completion"]
+
+    return prompt_cost + completion_cost
 
 
 def load_train_examples(train_file: Path, num_examples: int = 10) -> list[dict[str, str]]:
@@ -123,8 +148,12 @@ def parse_llm_response(response: str) -> tuple[str, str]:
     return method, request
 
 
-def generate_api_call(question: str, examples: list[dict[str, str]]) -> dict[str, str]:
-    """Сгенерировать API запрос для вопроса"""
+def generate_api_call(question: str, examples: list[dict[str, str]], model: str) -> tuple[dict[str, str], float]:
+    """Сгенерировать API запрос для вопроса
+
+    Returns:
+        tuple: (result_dict, cost_in_dollars)
+    """
     prompt = create_prompt(question, examples)
 
     messages = [{"role": "user", "content": prompt}]
@@ -135,12 +164,16 @@ def generate_api_call(question: str, examples: list[dict[str, str]]) -> dict[str
 
         method, request = parse_llm_response(llm_answer)
 
-        return {"type": method, "request": request}
+        # Рассчитываем стоимость
+        usage = response.get("usage", {})
+        cost = calculate_cost(usage, model)
+
+        return {"type": method, "request": request}, cost
 
     except Exception as e:
         click.echo(f"⚠️  Ошибка при генерации для вопроса '{question[:50]}...': {e}", err=True)
         # Возвращаем fallback
-        return {"type": "GET", "request": "/v1/assets"}
+        return {"type": "GET", "request": "/v1/assets"}, 0.0
 
 
 @click.command()
@@ -165,12 +198,19 @@ def generate_api_call(question: str, examples: list[dict[str, str]]) -> dict[str
 @click.option("--num-examples", type=int, default=10, help="Количество примеров для few-shot")
 def main(test_file: Path, train_file: Path, output_file: Path, num_examples: int) -> None:
     """Генерация submission.csv для хакатона"""
+    from src.app.core.config import get_settings
+
     click.echo("🚀 Генерация submission файла...")
     click.echo(f"📖 Загрузка примеров из {train_file}...")
+
+    # Получаем настройки для определения модели
+    settings = get_settings()
+    model = settings.openrouter_model
 
     # Загружаем примеры для few-shot
     examples = load_train_examples(train_file, num_examples)
     click.echo(f"✅ Загружено {len(examples)} примеров для few-shot learning")
+    click.echo(f"🤖 Используется модель: {model}")
 
     # Читаем тестовый набор
     click.echo(f"📖 Чтение {test_file}...")
@@ -183,15 +223,22 @@ def main(test_file: Path, train_file: Path, output_file: Path, num_examples: int
     click.echo(f"✅ Найдено {len(test_questions)} вопросов для обработки")
 
     # Генерируем ответы
-    click.echo("🤖 Генерация API запросов с помощью LLM...")
+    click.echo("\n🤖 Генерация API запросов с помощью LLM...")
     results = []
+    total_cost = 0.0
 
-    for item in tqdm(test_questions, desc="Обработка"):
-        api_call = generate_api_call(item["question"], examples)
+    # Используем tqdm с postfix для отображения стоимости
+    progress_bar = tqdm(test_questions, desc="Обработка")
+    for item in progress_bar:
+        api_call, cost = generate_api_call(item["question"], examples, model)
+        total_cost += cost
         results.append({"uid": item["uid"], "type": api_call["type"], "request": api_call["request"]})
 
+        # Обновляем postfix с текущей стоимостью
+        progress_bar.set_postfix({"cost": f"${total_cost:.4f}"})
+
     # Записываем в submission.csv
-    click.echo(f"💾 Сохранение результатов в {output_file}...")
+    click.echo(f"\n💾 Сохранение результатов в {output_file}...")
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_file, "w", encoding="utf-8", newline="") as f:
@@ -200,6 +247,8 @@ def main(test_file: Path, train_file: Path, output_file: Path, num_examples: int
         writer.writerows(results)
 
     click.echo(f"✅ Готово! Создано {len(results)} записей в {output_file}")
+    click.echo(f"\n💰 Общая стоимость генерации: ${total_cost:.4f}")
+    click.echo(f"   Средняя стоимость на запрос: ${total_cost / len(results):.6f}")
     click.echo("\n📊 Статистика по типам запросов:")
     type_counts: dict[str, int] = {}
     for r in results:
