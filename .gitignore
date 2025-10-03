@@ -9,3 +9,5 @@ data/interim/
 out/
 artifacts/
 data/processed/submission.csv
+venv/
+.mypy_cache/
