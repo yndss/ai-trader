@@ -23,18 +23,14 @@ def load_csv_data(file_path: str) -> dict[str, dict[str, str]]:
             for row in reader:
                 uid = row.get("uid", "").strip()
                 if uid:
-                    data[uid] = {
-                        "type": row.get("type", "").strip(),
-                        "request": row.get("request", "").strip()
-                    }
+                    data[uid] = {"type": row.get("type", "").strip(), "request": row.get("request", "").strip()}
     except Exception as e:
         raise ValueError(f"Failed to load CSV file: {e}") from e
     return data
 
 
-def validate_submission(
-    submission: dict[str, dict],
-    required_uids: set[str]
+def validate_submission(  # noqa: C901
+    submission: dict[str, dict], required_uids: set[str]
 ) -> tuple[bool, list[str]]:
     """
     СТРОГАЯ валидация submission перед подсчетом метрик
@@ -52,7 +48,7 @@ def validate_submission(
     Returns:
         (is_valid, errors): True если все проверки прошли, иначе False со списком ошибок
     """
-    errors = []
+    errors: list[str] = []
     valid_http_methods = {"GET", "POST", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"}
 
     # 1. Проверка наличия ВСЕХ required UID
@@ -113,10 +109,7 @@ def validate_submission(
     return is_valid, errors
 
 
-def calculate_accuracy(
-    submission: dict[str, dict],
-    ground_truth: dict[str, dict]
-) -> tuple[float, dict]:
+def calculate_accuracy(submission: dict[str, dict], ground_truth: dict[str, dict]) -> tuple[float, dict]:
     """
     Рассчитать accuracy метрику (только для валидных submission)
 
@@ -172,7 +165,7 @@ def calculate_accuracy(
     return accuracy, metrics
 
 
-def evaluate(submission_path: str, private_test_path: str, public_test_path: str) -> dict:
+def evaluate(submission_path: str, private_test_path: str, public_test_path: str) -> dict:  # noqa: C901
     """
     Standard evaluation interface with public/private leaderboard split.
 
@@ -202,7 +195,6 @@ def evaluate(submission_path: str, private_test_path: str, public_test_path: str
         - For critical errors, return scores = 0.0 with error description
         - Evaluation is strictly UID-based, row order doesn't matter
     """
-    errors = []
 
     # ШАГ 1: Проверка существования файлов
     if not Path(submission_path).exists():
@@ -238,7 +230,7 @@ def evaluate(submission_path: str, private_test_path: str, public_test_path: str
                 "public_score": 0.0,
                 "private_score": 0.0,
                 "metrics": {},
-                "errors": [f"Failed to parse submission file: {str(e)}"],
+                "errors": [f"Failed to parse submission file: {e!s}"],
             }
 
         if not submission:
@@ -256,7 +248,7 @@ def evaluate(submission_path: str, private_test_path: str, public_test_path: str
                 "public_score": 0.0,
                 "private_score": 0.0,
                 "metrics": {},
-                "errors": [f"Failed to load public test (internal error): {str(e)}"],
+                "errors": [f"Failed to load public test (internal error): {e!s}"],
             }
 
         try:
@@ -266,7 +258,7 @@ def evaluate(submission_path: str, private_test_path: str, public_test_path: str
                 "public_score": 0.0,
                 "private_score": 0.0,
                 "metrics": {},
-                "errors": [f"Failed to load private test (internal error): {str(e)}"],
+                "errors": [f"Failed to load private test (internal error): {e!s}"],
             }
 
         # ШАГ 3: СТРОГАЯ ВАЛИДАЦИЯ submission
@@ -290,12 +282,12 @@ def evaluate(submission_path: str, private_test_path: str, public_test_path: str
 
         # ШАГ 4: Подсчет accuracy (только для валидных submission)
         public_score = 0.0
-        public_metrics = {}
+        public_metrics: dict = {}
         if public_test:
             public_score, public_metrics = calculate_accuracy(submission, public_test)
 
         private_score = 0.0
-        private_metrics = {}
+        private_metrics: dict = {}
         if private_test:
             private_score, private_metrics = calculate_accuracy(submission, private_test)
 
@@ -320,7 +312,7 @@ def evaluate(submission_path: str, private_test_path: str, public_test_path: str
             "public_score": 0.0,
             "private_score": 0.0,
             "metrics": {},
-            "errors": [f"Unexpected error during evaluation: {str(e)}"],
+            "errors": [f"Unexpected error during evaluation: {e!s}"],
         }
 
 
