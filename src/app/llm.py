@@ -1,19 +1,23 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import requests
 
 from .config import get_settings
 
 
-def call_llm_with_tools(messages: List[Dict[str, str]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+def call_llm(
+    messages: list[dict[str, str]], temperature: float = 0.2, max_tokens: int | None = None
+) -> dict[str, Any]:
+    """Простой вызов LLM без tools"""
     s = get_settings()
-    payload = {
+    payload: dict[str, Any] = {
         "model": s.openrouter_model,
         "messages": messages,
-        "tools": tools,
-        "tool_choice": "auto",
-        "temperature": 0.2,
+        "temperature": temperature,
     }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+
     r = requests.post(
         f"{s.openrouter_base}/chat/completions",
         headers={
@@ -22,9 +26,6 @@ def call_llm_with_tools(messages: List[Dict[str, str]], tools: List[Dict[str, An
         },
         json=payload,
         timeout=60,
-    )
-    r.raise_for_status()
-    return r.json()
     )
     r.raise_for_status()
     return r.json()

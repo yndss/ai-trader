@@ -1,12 +1,12 @@
 import csv
-import os
 from pathlib import Path
+from typing import Optional
 
 
 class SubmissionValidator:
     """Валидатор для проверки submission файла"""
 
-    def __init__(self, submission_file_path: str = None):
+    def __init__(self, submission_file_path: Optional[str] = None) -> None:
         self.project_root = Path(__file__).parent.parent
         self.test_csv_path = self.project_root / "data" / "processed" / "test.csv"
 
@@ -16,42 +16,42 @@ class SubmissionValidator:
         else:
             self.submission_csv_path = Path(submission_file_path)
 
-    def get_test_uids(self):
+    def get_test_uids(self) -> set[str]:
         """Получить все uid из test.csv"""
         uids = set()
-        with open(self.test_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.test_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             next(reader)  # пропускаем заголовок
             for row in reader:
                 if row and len(row) >= 1:
                     uids.add(row[0])
         return uids
 
-    def validate_file_exists(self):
+    def validate_file_exists(self) -> bool:
         """Проверить, что файл submission существует"""
         if not self.submission_csv_path.exists():
             raise AssertionError(f"Файл {self.submission_csv_path} не найден")
         return True
 
-    def validate_structure(self):
+    def validate_structure(self) -> bool:
         """Проверить структуру файла submission"""
-        with open(self.submission_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.submission_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             header = next(reader)
 
             # Проверяем заголовок
-            expected_header = ['uid', 'type', 'request']
+            expected_header = ["uid", "type", "request"]
             if header != expected_header:
                 raise AssertionError(f"Неверный заголовок. Ожидалось {expected_header}, получено {header}")
         return True
 
-    def validate_uids_match_test(self):
+    def validate_uids_match_test(self) -> bool:
         """Проверить, что все uid из test.csv присутствуют в submission"""
         test_uids = self.get_test_uids()
         submission_uids = set()
 
-        with open(self.submission_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.submission_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             next(reader)  # пропускаем заголовок
 
             for row in reader:
@@ -74,10 +74,11 @@ class SubmissionValidator:
 
         return True
 
-    def validate_row_count(self):
+    def validate_row_count(self) -> bool:
         """Проверить, что количество строк в submission совпадает с test.csv"""
-        def count_lines(filepath):
-            with open(filepath, 'r', encoding='utf-8') as f:
+
+        def count_lines(filepath: Path) -> int:
+            with open(filepath, encoding="utf-8") as f:
                 return sum(1 for line in f)
 
         test_lines = count_lines(self.test_csv_path)
@@ -88,14 +89,14 @@ class SubmissionValidator:
 
         return True
 
-    def validate_type_values(self):
+    def validate_type_values(self) -> bool:
         """Проверить, что все значения type являются валидными HTTP методами"""
-        valid_http_methods = {'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'}
+        valid_http_methods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
 
         invalid_types = []
 
-        with open(self.submission_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.submission_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             next(reader)  # пропускаем заголовок
 
             for row_num, row in enumerate(reader, start=2):
@@ -109,19 +110,19 @@ class SubmissionValidator:
 
         return True
 
-    def validate_request_values(self):
+    def validate_request_values(self) -> bool:
         """Проверить, что все значения request являются валидными API путями"""
         invalid_requests = []
 
-        with open(self.submission_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.submission_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             next(reader)  # пропускаем заголовок
 
             for row_num, row in enumerate(reader, start=2):
                 if len(row) >= 3:
                     request_value = row[2]
                     # API путь должен начинаться с /
-                    if not request_value.startswith('/'):
+                    if not request_value.startswith("/"):
                         invalid_requests.append((row_num, request_value))
 
         if len(invalid_requests) > 0:
@@ -129,12 +130,12 @@ class SubmissionValidator:
 
         return True
 
-    def validate_no_empty_values(self):
+    def validate_no_empty_values(self) -> bool:
         """Проверить, что нет пустых значений в обязательных полях"""
         empty_values = []
 
-        with open(self.submission_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.submission_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             next(reader)  # пропускаем заголовок
 
             for row_num, row in enumerate(reader, start=2):
@@ -147,13 +148,13 @@ class SubmissionValidator:
 
         return True
 
-    def validate_uid_uniqueness(self):
+    def validate_uid_uniqueness(self) -> bool:
         """Проверить, что все uid уникальны"""
         uids = []
         duplicates = []
 
-        with open(self.submission_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter=';')
+        with open(self.submission_csv_path, encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=";")
             next(reader)  # пропускаем заголовок
 
             for row_num, row in enumerate(reader, start=2):
@@ -168,17 +169,17 @@ class SubmissionValidator:
 
         return True
 
-    def run_all_validations(self):
+    def run_all_validations(self) -> list[tuple[str, bool, Optional[str]]]:
         """Запустить все проверки валидации"""
         validations = [
-            ('file_exists', self.validate_file_exists),
-            ('structure', self.validate_structure),
-            ('uids_match', self.validate_uids_match_test),
-            ('row_count', self.validate_row_count),
-            ('type_values', self.validate_type_values),
-            ('request_values', self.validate_request_values),
-            ('no_empty_values', self.validate_no_empty_values),
-            ('uid_uniqueness', self.validate_uid_uniqueness)
+            ("file_exists", self.validate_file_exists),
+            ("structure", self.validate_structure),
+            ("uids_match", self.validate_uids_match_test),
+            ("row_count", self.validate_row_count),
+            ("type_values", self.validate_type_values),
+            ("request_values", self.validate_request_values),
+            ("no_empty_values", self.validate_no_empty_values),
+            ("uid_uniqueness", self.validate_uid_uniqueness),
         ]
 
         results = []
