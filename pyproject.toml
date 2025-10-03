@@ -7,17 +7,21 @@ readme = "README.md"
 packages = [{ include = "app", from = "src" }]
 
 [tool.poetry.dependencies]
-python = ">=3.11"
+python = ">=3.11,<4.0"
 pydantic = "^2.11.9"
 requests = "^2.32.5"
 python-dotenv = "^1.1.1"
 click = "^8.1.7"
 tqdm = "^4.67.1"
 streamlit = "^1.40.2"
+langchain = "^0.3.7"
+langchain-openai = "^0.2.5"
+mcp = "^1.1.0"
+numpy = "1.26.4"
+httpx = {version = "^0.28.1", extras = ["http2"]}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
-httpx = "^0.28.1"
 black = "^25.9.0"
 ruff = "^0.13.3"
 types-requests = "^2.32.0"
@@ -28,6 +32,7 @@ generate-submission = "scripts.generate_submission:main"
 calculate-metrics = "scripts.calculate_metrics:main"
 evaluate = "scripts.evaluate:evaluate"
 chat-cli = "src.app.interfaces.chat_cli:main"
+mcp-agent = "src.app.interfaces.mcp_agent:main_cli"
 
 [build-system]
 requires = ["poetry-core"]
@@ -39,27 +44,27 @@ preview = true
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle: Enforces PEP 8 style errors
-    "F",   # pyflakes: Detects undefined or unused variables
-    "W",   # pycodestyle: Additional style warnings
-    "I",   # isort: Ensures imports are properly sorted
-    "UP",  # pyupgrade: Modernizes code to use newer Python features
-    "B",   # flake8-bugbear: Highlights common bugs and bad practices
-    "C4",  # flake8-comprehensions: Suggests improvements for comprehensions
-    "SIM", # flake8-simplify: Simplifies complex expressions
-    "Q",   # flake8-quotes: Enforces consistent usage of quotes
-    "RET", # flake8-return: Ensures return statements are consistent
-    "ARG", # flake8-unused-arguments: Warns about unused function arguments
-    "TCH", # flake8-type-checking: Improves type-checking practices
-    "ANN", # flake8-annotations: Encourages the use of type annotations
-    "RUF", # Ruff-specific rules: Adds optimizations specific to Ruff
-    "C90", # McCabe complexity checker
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "Q",
+    "RET",
+    "ARG",
+    "TCH",
+    "ANN",
+    "RUF",
+    "C90",
 ]
 ignore = [
-    "CPY001", # Ignore annotations for self
-    "RUF001", # String contains ambiguous unicode characters (Cyrillic)
-    "RUF002", # Docstring contains ambiguous unicode characters (Cyrillic)
-    "RUF003", # Comment contains ambiguous unicode characters (Cyrillic)
+    "CPY001",
+    "RUF001",
+    "RUF002",
+    "RUF003",
 ]
 
 [tool.ruff.lint.per-file-ignores]
