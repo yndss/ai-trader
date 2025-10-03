@@ -25,7 +25,7 @@ class FinamAPIClient:
             base_url: Базовый URL API (по умолчанию из документации)
         """
         self.access_token = access_token or os.getenv("FINAM_ACCESS_TOKEN", "")
-        self.base_url = base_url or os.getenv("FINAM_API_BASE_URL", "https://trade-api.finam.ru")
+        self.base_url = base_url or os.getenv("FINAM_API_BASE_URL", "https://api.finam.ru")
         self.session = requests.Session()
 
         if self.access_token:

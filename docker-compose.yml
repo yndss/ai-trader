@@ -17,7 +17,7 @@ services:
 
       # Finam TradeAPI
       - FINAM_ACCESS_TOKEN=${FINAM_ACCESS_TOKEN:-}
-      - FINAM_API_BASE_URL=${FINAM_API_BASE_URL:-https://trade-api.finam.ru}
+      - FINAM_API_BASE_URL=${FINAM_API_BASE_URL:-https://api.finam.ru}
 
       # App settings
       - APP_DEBUG=${APP_DEBUG:-false}

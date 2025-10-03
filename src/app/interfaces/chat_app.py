@@ -72,7 +72,7 @@ def main() -> None:  # noqa: C901
                 type="password",
                 help="Токен доступа к Finam TradeAPI (или используйте FINAM_ACCESS_TOKEN)",
             )
-            api_base_url = st.text_input("API Base URL", value="https://trade-api.finam.ru", help="Базовый URL API")
+            api_base_url = st.text_input("API Base URL", value="https://api.finam.ru", help="Базовый URL API")
 
         account_id = st.text_input("ID счета", value="", help="Оставьте пустым если не требуется")
 
