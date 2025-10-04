@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, Field, create_model
 from dotenv import load_dotenv
-
+from functools import partial
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ENV_PATH = PROJECT_ROOT / ".env"
@@ -29,18 +29,11 @@ else:
 COMETAPI_BASE_URL = os.getenv("COMETAPI_BASE_URL", "https://api.cometapi.com/v1")
 MODEL_ID = os.getenv("MODEL_ID", "qwen2.5-32b-instruct")
 COMET_API_KEY = os.getenv("COMET_API_KEY", "sk-eda8aMPSz9nfgZwaVTAvkkLZtXMiiyLMLbna3GixHlfa7G2K")
-
-# Default values for Finam API
-DEFAULT_ACCOUNT_ID = os.getenv("DEFAULT_ACCOUNT_ID", "")
-DEFAULT_FIELD_VALUES = {
-    "account_id": DEFAULT_ACCOUNT_ID,
-    "accountId": DEFAULT_ACCOUNT_ID,
-}
+ 
 
 
 class AgentDomain(Enum):
     """Домены специализированных агентов"""
-
     ACCOUNTS = "accounts"
     INSTRUMENTS = "instruments"
     ORDERS = "orders"
@@ -48,42 +41,45 @@ class AgentDomain(Enum):
     AUTH = "auth"
 
 
-TOOL_DOMAINS: Dict[str, AgentDomain] = {
+TOOL_DOMAINS = {
     "Auth": AgentDomain.AUTH,
-    "TokenDetails": AgentDomain.AUTH,
+    "TokenDetails": AgentDomain.AUTH,    
     "GetAccount": AgentDomain.ACCOUNTS,
     "Trades": AgentDomain.ACCOUNTS,
-    "Transactions": AgentDomain.ACCOUNTS,
-    # "Clock_ACCOUNTS": AgentDomain.ACCOUNTS,
+    "Transactions": AgentDomain.ACCOUNTS, 
+    #"Clock_ACCOUNTS": AgentDomain.ACCOUNTS,
+
     "GetAsset": AgentDomain.INSTRUMENTS,
     "GetAssetParams": AgentDomain.INSTRUMENTS,
     "OptionsChain": AgentDomain.INSTRUMENTS,
     "Schedule": AgentDomain.INSTRUMENTS,
     "Exchanges": AgentDomain.INSTRUMENTS,
+    
     "PlaceOrder": AgentDomain.ORDERS,
     "GetOrders": AgentDomain.ORDERS,
     "GetOrder": AgentDomain.ORDERS,
     "CancelOrder": AgentDomain.ORDERS,
+    
     "Bars": AgentDomain.MARKET_DATA,
     "LastQuote": AgentDomain.MARKET_DATA,
     "LatestTrades": AgentDomain.MARKET_DATA,
     "OrderBook": AgentDomain.MARKET_DATA,
-    # "Clock_MARKET_DATA": AgentDomain.MARKET_DATA,
+    #"Clock_MARKET_DATA": AgentDomain.MARKET_DATA,
+
 }
 
-
-DOMAIN_DESCRIPTIONS: Dict[AgentDomain, str] = {
+DOMAIN_DESCRIPTIONS = {
     AgentDomain.AUTH: "аутентификации и получения информации о токенах",
     AgentDomain.ACCOUNTS: "работы со счетами, портфелями и балансами",
     AgentDomain.INSTRUMENTS: "поиска и анализа торговых инструментов",
     AgentDomain.ORDERS: "управления заявками (создание, отмена, мониторинг)",
-    AgentDomain.MARKET_DATA: "получения рыночных данных (котировки, свечи, стаканы)",
+    AgentDomain.MARKET_DATA: "получения рыночных данных (котировки, свечи, стаканы)"
 }
 
 
 class SpecializedAgent:
     """Специализированный агент для конкретного домена"""
-
+    
     def __init__(self, domain: AgentDomain, tools: List[Tool], llm: ChatOpenAI):
         self.domain = domain
         self.tools = tools
@@ -92,16 +88,16 @@ class SpecializedAgent:
             memory_key="chat_history",
             return_messages=True,
             output_key="output",
-            k=3,
+            k=3
         )
         self.agent = self._create_agent()
-
+    
     def _create_agent(self):
         """Создание агента с оптимизированной конфигурацией"""
         tool_names = ", ".join(t.name for t in self.tools)
         tools_desc = "\n".join(f"{t.name}: {t.description}" for t in self.tools)
         system_prompt = self._build_domain_prompt(tools_desc, tool_names)
-
+        
         agent = initialize_agent(
             self.tools,
             self.llm,
@@ -112,17 +108,17 @@ class SpecializedAgent:
             max_iterations=5,
             agent_kwargs={
                 "memory_prompts": ["chat_history"],
-                "input_variables": ["input", "agent_scratchpad", "chat_history"],
-            },
+                "input_variables": ["input", "agent_scratchpad", "chat_history"]
+            }
         )
-
+        
         agent.agent.llm_chain.prompt.messages[0].prompt.template = system_prompt
-
+        
         if "chat_history" not in agent.agent.llm_chain.prompt.input_variables:
             agent.agent.llm_chain.prompt.input_variables.append("chat_history")
-
+        
         return agent
-
+    
     def _build_domain_prompt(self, tools_desc: str, tool_names: str) -> str:
         """Построение промпта для специализированного агента"""
         return f"""Ты специализированный агент для {DOMAIN_DESCRIPTIONS[self.domain]}.
@@ -187,18 +183,18 @@ YANDEX - YDEX@MISX
 
 Доступные таймфреймы 
 
-TIME_FRAME_M1\t1 минута. Глубина данных 7 дней.
-TIME_FRAME_M5\t5 минут. Глубина данных 30 дней.
-TIME_FRAME_M15\t15 минут. Глубина данных 30 дней.
-TIME_FRAME_M30\t30 минут. Глубина данных 30 дней.
-TIME_FRAME_H1\t1 час. Глубина данных 30 дней.
-TIME_FRAME_H2\t2 часа. Глубина данных 30 дней.
-TIME_FRAME_H4\t4 часа. Глубина данных 30 дней.
-TIME_FRAME_H8\t8 часов. Глубина данных 30 дней.
-TIME_FRAME_D\t1 День. Глубина данных 365 дней.
-TIME_FRAME_W\tНеделя. Глубина данных 5 лет.
-TIME_FRAME_MN\tМесяц. Глубина данных 5 лет.
-TIME_FRAME_QR\tКвартал (3 месяца). Глубина данных 5 лет.
+TIME_FRAME_M1	1 минута. Глубина данных 7 дней.
+TIME_FRAME_M5	5 минут. Глубина данных 30 дней.
+TIME_FRAME_M15	15 минут. Глубина данных 30 дней.
+TIME_FRAME_M30	30 минут. Глубина данных 30 дней.
+TIME_FRAME_H1	1 час. Глубина данных 30 дней.
+TIME_FRAME_H2	2 часа. Глубина данных 30 дней.
+TIME_FRAME_H4	4 часа. Глубина данных 30 дней.
+TIME_FRAME_H8	8 часов. Глубина данных 30 дней.
+TIME_FRAME_D	1 День. Глубина данных 365 дней.
+TIME_FRAME_W	Неделя. Глубина данных 5 лет.
+TIME_FRAME_MN	Месяц. Глубина данных 5 лет.
+TIME_FRAME_QR	Квартал (3 месяца). Глубина данных 5 лет.
 
 
 Используй JSON для вызова инструментов:
@@ -242,56 +238,56 @@ Action:
 
 Thought:
 """
-
+    
     async def execute(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Выполнение задачи агентом"""
         task_input = task
         if context and "global_history" in context:
             task_input = f"Контекст из истории:\n{context['global_history']}\n\nТекущий запрос: {task}"
-
+        
         result = await self.agent.ainvoke({"input": task_input})
         return result["output"]
 
 
 class OrchestratorAgent:
     """Оркестратор для маршрутизации запросов между агентами"""
-
-    DOMAIN_MAP: Dict[str, AgentDomain] = {
+    
+    DOMAIN_MAP = {
         "AUTH": AgentDomain.AUTH,
         "ACCOUNTS": AgentDomain.ACCOUNTS,
         "INSTRUMENTS": AgentDomain.INSTRUMENTS,
         "ORDERS": AgentDomain.ORDERS,
         "MARKET_DATA": AgentDomain.MARKET_DATA,
     }
-
+    
     def __init__(self, llm: ChatOpenAI):
         self.llm = llm
         self.specialized_agents: Dict[AgentDomain, SpecializedAgent] = {}
         self.global_memory = ConversationBufferWindowMemory(
             memory_key="chat_history",
             return_messages=True,
-            k=10,
+            k=10
         )
-
+    
     def add_agent(self, agent: SpecializedAgent) -> None:
         """Добавление специализированного агента"""
         self.specialized_agents[agent.domain] = agent
-
+    
     def _get_history(self, max_messages: int = 6, max_length: int = 200) -> str:
         """Получение истории диалога"""
         memory_vars = self.global_memory.load_memory_variables({})
-
+        
         if not memory_vars.get("chat_history"):
             return "Нет предыдущих сообщений"
-
-        history_text: List[str] = []
+        
+        history_text = []
         for msg in memory_vars["chat_history"][-max_messages:]:
             role = "Пользователь" if msg.type == "human" else "Ассистент"
             content = msg.content[:max_length]
             history_text.append(f"{role}: {content}")
-
+        
         return "\n".join(history_text)
-
+    
     async def route_request(self, user_input: str) -> AgentDomain:
         """Маршрутизация запроса к соответствующему агенту"""
         routing_prompt = f"""Ты агент-маршрутизатор в системе управления торговым счетом Finam.
@@ -380,86 +376,90 @@ class OrchestratorAgent:
         response = await self.llm.ainvoke(routing_prompt)
         domain_str = response.content.strip().upper()
         selected_domain = self.DOMAIN_MAP.get(domain_str, AgentDomain.ACCOUNTS)
-
+        
         print(f"\n🎯 Оркестратор направил запрос агенту: {selected_domain.value}")
         return selected_domain
-
+    
     async def process_request(self, user_input: str) -> str:
         """Обработка пользовательского запроса"""
         try:
             self.global_memory.chat_memory.add_user_message(user_input)
             target_domain = await self.route_request(user_input)
-
+            
             agent = self.specialized_agents.get(target_domain)
-
+ 
             if not agent:
                 error_msg = f"Агент для домена {target_domain.value} не найден"
                 self.global_memory.chat_memory.add_ai_message(error_msg)
                 return error_msg
-
+            
             context = {"global_history": self._get_history()}
             result = await agent.execute(user_input, context)
             self.global_memory.chat_memory.add_ai_message(result)
-
+            
             return result
-
-        except Exception as exc:  # pragma: no cover - defensive logging
-            error_msg = f"Произошла ошибка при обработке запроса: {str(exc)}"
+            
+        except Exception as e:
+            error_msg = f"Произошла ошибка при обработке запроса: {str(e)}"
             print(f"❌ Ошибка: {error_msg}")
             self.global_memory.chat_memory.add_ai_message(error_msg)
             return error_msg
 
+from pydantic import create_model, Field
+from typing import Any, Dict, Tuple, Type
+
 
 def create_tool_wrapper(session: ClientSession, tool_name: str):
     """Фабрика для создания wrapper-функции инструмента"""
-
     async def _call_func(*args, **kwargs):
         try:
-            params: Dict[str, Any] = {}
-
+            params = {}
+            
+            # Обрабатываем разные способы передачи параметров
             if args and isinstance(args[0], dict):
+                # Если первый позиционный аргумент - словарь
                 params = args[0]
             elif args and isinstance(args[0], str):
+                # Если первый позиционный аргумент - строка
+                import json
                 try:
                     params = json.loads(args[0])
                 except json.JSONDecodeError:
                     params = {"symbol": args[0]}
             elif kwargs:
+                # Если переданы именованные аргументы
                 params = kwargs
             elif args:
+                # Любые другие позиционные аргументы
                 params = {"input": str(args[0])}
-
+            
             print(f"🔧 Tool call: {tool_name}, params: {params}")
-
+            
             response = await session.call_tool(tool_name, params)
 
-            if hasattr(response, "isError") and response.isError:
+            
+            
+            if hasattr(response, 'isError') and response.isError:
                 error_content = ""
-                if hasattr(response, "content") and response.content:
+                if hasattr(response, 'content') and response.content:
                     for content_item in response.content:
-                        if hasattr(content_item, "text"):
+                        if hasattr(content_item, 'text'):
                             error_content = content_item.text
                             break
                 return f"Ошибка при вызове {tool_name}: {error_content}"
-
+            
             return str(response)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            error_msg = f"Ошибка при вызове инструмента {tool_name}: {str(exc)}"
+        except Exception as e:
+            error_msg = f"Ошибка при вызове инструмента {tool_name}: {str(e)}"
             print(f"❌ {error_msg}")
             return error_msg
-
+    
     return _call_func
 
-
-_JSON_TO_PY: Dict[str, type] = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-    "object": dict,
-    "array": list,
+_JSON_TO_PY = {
+    "string": str, "integer": int, "number": float, "boolean": bool,
+    "object": dict, "array": list,
 }
-
 
 def jsonschema_to_args_schema(name: str, schema: Dict[str, Any] | None) -> Type[BaseModel]:
     schema = schema or {}
@@ -468,112 +468,111 @@ def jsonschema_to_args_schema(name: str, schema: Dict[str, Any] | None) -> Type[
     fields: Dict[str, tuple[type, Field]] = {}
 
     for key, prop in props.items():
-        json_type = prop.get("type", "string")
-        py_type = _JSON_TO_PY.get(json_type, str)
+        jt = prop.get("type", "string")
+        py_t = _JSON_TO_PY.get(jt, str)
         default = ... if key in required else None
-        fields[key] = (py_type, Field(default, description=prop.get("description")))
+        fields[key] = (py_t, Field(default, description=prop.get("description")))
 
     if not fields:
+        # фоллбэк на один свободный параметр
         fields["input"] = (str, Field(..., description="Free-form input"))
-
     return create_model(name, **fields)  # type: ignore
 
 
 def _mcp_response_to_text(resp: Any) -> str:
+    # CallToolResult → content[] → text
     try:
-        for content in getattr(resp, "content", []) or []:
-            if getattr(content, "type", None) == "text" and getattr(content, "text", None):
-                return content.text
+        for c in getattr(resp, "content", []) or []:
+            if getattr(c, "type", None) == "text" and getattr(c, "text", None):
+                return c.text
     except Exception:
         pass
     return str(resp)
 
 
-def _structured_call_factory(session: ClientSession, tool_name: str):
+def _structured_call_factory(session, tool_name: str):
     async def _call(**kwargs):
         print(f"🔧 Tool call: {tool_name}, params: {kwargs}")
         resp = await session.call_tool(tool_name, kwargs)
         return _mcp_response_to_text(resp)
-
     return _call
 
 
-async def create_tools_from_mcp(session: ClientSession) -> List[StructuredTool]:
-    tools_result = await session.list_tools()
-    structured_tools: List[StructuredTool] = []
+async def create_tools_from_mcp(session) -> List[StructuredTool]:
+    out: List[StructuredTool] = []
+    result = await session.list_tools()
 
-    for tool in tools_result.tools:
-        tool_name = tool.name
-        input_schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
-        args_schema = jsonschema_to_args_schema(f"{tool_name}Args", input_schema)
+    for t in result.tools:
+        tool_name = t.name  # захватываем отдельно
+        input_schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
+        ArgsSchema = jsonschema_to_args_schema(f"{tool_name}Args", input_schema)
 
-        call = _structured_call_factory(session, tool_name)
-        structured_tools.append(
+        call = _structured_call_factory(session, tool_name)  # ← ФИКС: фабрика на каждый тул
+        out.append(
             StructuredTool(
                 name=tool_name,
-                description=tool.description or "MCP tool",
-                args_schema=args_schema,
-                coroutine=call,
+                description=t.description or "MCP tool",
+                args_schema=ArgsSchema,
+                coroutine=call,  # принимает **kwargs строго по args_schema
             )
         )
         print(f"✅ Зарегистрирован StructuredTool: {tool_name}")
-
-    return structured_tools
-
+    return out
 
 def group_tools_by_domain(tools: List[Tool]) -> Dict[AgentDomain, List[Tool]]:
     """Группировка инструментов по доменам"""
-    grouped: Dict[AgentDomain, List[Tool]] = {domain: [] for domain in AgentDomain}
-
+    tools_by_domain = {domain: [] for domain in AgentDomain}
+    
     for tool in tools:
         domain = TOOL_DOMAINS.get(tool.name)
         if domain:
-            grouped[domain].append(tool)
-
-    return grouped
+            tools_by_domain[domain].append(tool)
+    
+    return tools_by_domain
 
 
 async def run_test_queries(orchestrator: OrchestratorAgent, queries: List[str]) -> None:
     """Запуск тестовых запросов"""
-    for idx, query in enumerate(queries, 1):
-        print(f"\n{'=' * 70}")
-        print(f"📝 Запрос {idx}: {query}")
-        print("=" * 70)
-
+    for i, query in enumerate(queries, 1):
+        print(f"\n{'='*70}")
+        print(f"📝 Запрос {i}: {query}")
+        print("="*70)
+        
         try:
             result = await orchestrator.process_request(query)
             print(f"\n💬 Ответ: {result}")
-        except Exception as exc:  # pragma: no cover - debug helper
-            print(f"\n❌ Ошибка при обработке запроса: {exc}")
-
-        print("-" * 70)
+        except Exception as e:
+            print(f"\n❌ Ошибка при обработке запроса: {e}")
+        
+        print("-"*70)
         await asyncio.sleep(1)
 
 
 async def run_interactive_mode(orchestrator: OrchestratorAgent) -> None:
     """Интерактивный режим общения"""
-    print("\n" + "=" * 70)
+    print("\n" + "="*70)
     print("🎮 Интерактивный режим (введите 'exit' для выхода)")
-    print("=" * 70)
-
+    print("="*70)
+    
     while True:
         try:
             user_input = input("\n👤 Вы: ").strip()
-            if user_input.lower() in {"exit", "quit", "выход"}:
+            if user_input.lower() in {'exit', 'quit', 'выход'} or '/Users/vanmac/finam-trader/.venv/bin/python /Users/vanmac/finam-trader/trader_mcp/main.py' in user_input:
                 print("👋 До свидания!")
                 break
-
+            
             if not user_input:
                 continue
-
+            
             result = await orchestrator.process_request(user_input)
             print(f"\n🤖 Ассистент: {result}")
-
+            
         except KeyboardInterrupt:
             print("\n👋 До свидания!")
             break
-        except Exception as exc:  # pragma: no cover - interactive safety
-            print(f"\n❌ Ошибка: {exc}")
+        except Exception as e:
+            print(f"\n❌ Ошибка: {e}")
+
 
 
 SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "mcp" / "server.py"
