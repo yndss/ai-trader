@@ -47,8 +47,10 @@ TOOL_DOMAINS = {
     "GetAccount": AgentDomain.ACCOUNTS,
     "Trades": AgentDomain.ACCOUNTS,
     "Transactions": AgentDomain.ACCOUNTS, 
-    #"Clock_ACCOUNTS": AgentDomain.ACCOUNTS,
+    "Clock_ACCOUNTS": AgentDomain.ACCOUNTS,
 
+    "Assets": AgentDomain.INSTRUMENTS,
+    "Clock": AgentDomain.INSTRUMENTS,
     "GetAsset": AgentDomain.INSTRUMENTS,
     "GetAssetParams": AgentDomain.INSTRUMENTS,
     "OptionsChain": AgentDomain.INSTRUMENTS,
@@ -64,7 +66,7 @@ TOOL_DOMAINS = {
     "LastQuote": AgentDomain.MARKET_DATA,
     "LatestTrades": AgentDomain.MARKET_DATA,
     "OrderBook": AgentDomain.MARKET_DATA,
-    #"Clock_MARKET_DATA": AgentDomain.MARKET_DATA,
+    "Clock_MARKET_DATA": AgentDomain.MARKET_DATA,
 
 }
 
@@ -125,76 +127,6 @@ class SpecializedAgent:
 
 Доступные инструменты:
 {tools_desc}
-
-Роснефть - ROSN@MISX
-
-Газпром - GAZP@MISX
-
-Газпром Нефть - SIBN@MISX
-
-Лукойл - LKOH@MISX
-
-Татнефть - TATN@MISX
-
-АЛРОСА - ALRS@MISX
-
-Сургутнефтегаз - SNGS@MISX
-
-РУСАЛ - RUAL@MISX
-
-Amazon - AMZN@XNGS
-
-ВТБ - VTBR@MISX
-
-Сбер / Сбербанк - SBERP@MISX, SBER@MISX
-
-Microsoft - MSFT@XNGS
-
-Аэрофлот - AFLT@MISX
-
-Магнит - MGNT@MISX
-
-Норникель - GMKN@MISX, GKZ5@RTSX (фьючерсы)
-
-Северсталь - CHZ5@RTSX (фьючерсы), CHMF@MISX
-
-ФосАгро - PHOR@MISX
-
-Юнипро - UPRO@MISX
-
-Распадская - RASP@MISX
-
-Полюс - PLZL@MISX
-
-X5 Retail Group
-
-ПИК - PIKK@MISX
-
-МТС - MTSS@MISX
-
-Новатэк - NVTK@MISX
-
-МЕЧЕЛ - MTLR@MISX
-
-YANDEX - YDEX@MISX
-
-период за все время: 2014-01-01T00:00:00Z - сегодня 
-для получения текущего времени используй 2025-10-04T11:20:44.421182013Z 
-
-Доступные таймфреймы 
-
-TIME_FRAME_M1	1 минута. Глубина данных 7 дней.
-TIME_FRAME_M5	5 минут. Глубина данных 30 дней.
-TIME_FRAME_M15	15 минут. Глубина данных 30 дней.
-TIME_FRAME_M30	30 минут. Глубина данных 30 дней.
-TIME_FRAME_H1	1 час. Глубина данных 30 дней.
-TIME_FRAME_H2	2 часа. Глубина данных 30 дней.
-TIME_FRAME_H4	4 часа. Глубина данных 30 дней.
-TIME_FRAME_H8	8 часов. Глубина данных 30 дней.
-TIME_FRAME_D	1 День. Глубина данных 365 дней.
-TIME_FRAME_W	Неделя. Глубина данных 5 лет.
-TIME_FRAME_MN	Месяц. Глубина данных 5 лет.
-TIME_FRAME_QR	Квартал (3 месяца). Глубина данных 5 лет.
 
 
 Используй JSON для вызова инструментов:
@@ -314,6 +246,7 @@ class OrchestratorAgent:
    • Список доступных бирж и их MIC коды
    • Расписание торговых сессий для инструмента
    • Цепочки опционов для базовых активов
+   • Просмотр времени
 
 4. ORDERS - Управление заявками
    • Выставление новых заявок (рыночные, лимитные, стоп-заявки, мульти-лег)
@@ -380,24 +313,29 @@ class OrchestratorAgent:
         print(f"\n🎯 Оркестратор направил запрос агенту: {selected_domain.value}")
         return selected_domain
     
-    async def process_request(self, user_input: str) -> str:
+    async def process_request(self, user_input: str, query_id = "") -> str:
         """Обработка пользовательского запроса"""
         try:
-            self.global_memory.chat_memory.add_user_message(user_input)
-            target_domain = await self.route_request(user_input)
+            token = current_query_id.set(query_id)
             
-            agent = self.specialized_agents.get(target_domain)
- 
-            if not agent:
-                error_msg = f"Агент для домена {target_domain.value} не найден"
-                self.global_memory.chat_memory.add_ai_message(error_msg)
-                return error_msg
-            
-            context = {"global_history": self._get_history()}
-            result = await agent.execute(user_input, context)
-            self.global_memory.chat_memory.add_ai_message(result)
-            
-            return result
+            try:
+                self.global_memory.chat_memory.add_user_message(user_input)
+                target_domain = await self.route_request(user_input)
+                
+                agent = self.specialized_agents.get(target_domain)
+     
+                if not agent:
+                    error_msg = f"Агент для домена {target_domain.value} не найден"
+                    self.global_memory.chat_memory.add_ai_message(error_msg)
+                    return error_msg
+                
+                context = {"global_history": self._get_history()}
+                result = await agent.execute(user_input, context)
+                self.global_memory.chat_memory.add_ai_message(result)
+                
+                return result
+            finally:
+                current_query_id.reset(token)
             
         except Exception as e:
             error_msg = f"Произошла ошибка при обработке запроса: {str(e)}"
@@ -408,36 +346,38 @@ class OrchestratorAgent:
 from pydantic import create_model, Field
 from typing import Any, Dict, Tuple, Type
 
+import contextvars
+from typing import Optional
+
+current_query_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'current_query_id', 
+    default=None
+)
+
 
 def create_tool_wrapper(session: ClientSession, tool_name: str):
     """Фабрика для создания wrapper-функции инструмента"""
     async def _call_func(*args, **kwargs):
         try:
+            
             params = {}
             
-            # Обрабатываем разные способы передачи параметров
             if args and isinstance(args[0], dict):
-                # Если первый позиционный аргумент - словарь
                 params = args[0]
             elif args and isinstance(args[0], str):
-                # Если первый позиционный аргумент - строка
                 import json
                 try:
                     params = json.loads(args[0])
                 except json.JSONDecodeError:
                     params = {"symbol": args[0]}
             elif kwargs:
-                # Если переданы именованные аргументы
                 params = kwargs
             elif args:
-                # Любые другие позиционные аргументы
                 params = {"input": str(args[0])}
             
-            print(f"🔧 Tool call: {tool_name}, params: {params}")
-            
             response = await session.call_tool(tool_name, params)
-
             
+  
             
             if hasattr(response, 'isError') and response.isError:
                 error_content = ""
@@ -450,11 +390,18 @@ def create_tool_wrapper(session: ClientSession, tool_name: str):
             
             return str(response)
         except Exception as e:
+            query_id = current_query_id.get()
             error_msg = f"Ошибка при вызове инструмента {tool_name}: {str(e)}"
-            print(f"❌ {error_msg}")
+            print(f"❌ [Query: {query_id}] {error_msg}")
             return error_msg
     
     return _call_func
+    
+
+from typing import Any, Dict, List, Type
+from pydantic import BaseModel, Field, create_model
+from langchain.tools import StructuredTool
+from functools import partial
 
 _JSON_TO_PY = {
     "string": str, "integer": int, "number": float, "boolean": bool,
@@ -474,13 +421,11 @@ def jsonschema_to_args_schema(name: str, schema: Dict[str, Any] | None) -> Type[
         fields[key] = (py_t, Field(default, description=prop.get("description")))
 
     if not fields:
-        # фоллбэк на один свободный параметр
         fields["input"] = (str, Field(..., description="Free-form input"))
     return create_model(name, **fields)  # type: ignore
 
 
 def _mcp_response_to_text(resp: Any) -> str:
-    # CallToolResult → content[] → text
     try:
         for c in getattr(resp, "content", []) or []:
             if getattr(c, "type", None) == "text" and getattr(c, "text", None):
@@ -493,8 +438,27 @@ def _mcp_response_to_text(resp: Any) -> str:
 def _structured_call_factory(session, tool_name: str):
     async def _call(**kwargs):
         print(f"🔧 Tool call: {tool_name}, params: {kwargs}")
-        resp = await session.call_tool(tool_name, kwargs)
-        return _mcp_response_to_text(resp)
+        response = await session.call_tool(tool_name, kwargs)
+
+        query_id = current_query_id.get()
+
+        def get_type(tool_name):
+                if tool_name == 'CancelOrder':
+                    return "DELETE"
+                elif tool_name in ["Auth", "PlaceOrder", "TokenDetails"]:
+                    return "POST"
+                return "GET"
+
+        j = json.loads(response.content[0].text)
+        error = j.get("error")
+        api_url = error[error.find('url:')+25:]
+        api_url.replace("TRQD05:409933", "{{account_id}}")
+        with open('submission.csv', 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter=';')
+            writer.writerow([query_id, get_type(tool_name), api_url])
+        return _mcp_response_to_text(response)
+
+
     return _call
 
 
@@ -503,17 +467,17 @@ async def create_tools_from_mcp(session) -> List[StructuredTool]:
     result = await session.list_tools()
 
     for t in result.tools:
-        tool_name = t.name  # захватываем отдельно
+        tool_name = t.name  
         input_schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
         ArgsSchema = jsonschema_to_args_schema(f"{tool_name}Args", input_schema)
 
-        call = _structured_call_factory(session, tool_name)  # ← ФИКС: фабрика на каждый тул
+        call = _structured_call_factory(session, tool_name)  
         out.append(
             StructuredTool(
                 name=tool_name,
                 description=t.description or "MCP tool",
                 args_schema=ArgsSchema,
-                coroutine=call,  # принимает **kwargs строго по args_schema
+                coroutine=call,  
             )
         )
         print(f"✅ Зарегистрирован StructuredTool: {tool_name}")
