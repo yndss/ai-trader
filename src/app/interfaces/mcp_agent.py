@@ -442,20 +442,6 @@ def _structured_call_factory(session, tool_name: str):
 
         query_id = current_query_id.get()
 
-        def get_type(tool_name):
-                if tool_name == 'CancelOrder':
-                    return "DELETE"
-                elif tool_name in ["Auth", "PlaceOrder", "TokenDetails"]:
-                    return "POST"
-                return "GET"
-
-        j = json.loads(response.content[0].text)
-        error = j.get("error")
-        api_url = error[error.find('url:')+25:]
-        api_url.replace("TRQD05:409933", "{{account_id}}")
-        with open('submission.csv', 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f, delimiter=';')
-            writer.writerow([query_id, get_type(tool_name), api_url])
         return _mcp_response_to_text(response)
 
 
