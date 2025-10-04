@@ -11,7 +11,8 @@ import traceback
 from enum import Enum
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Dict, Iterable, List, Optional, Type
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, Iterable, List, Optional, Type, Union, get_args, get_origin
 
 from dotenv import load_dotenv
 from langchain.agents import AgentExecutor, AgentType, initialize_agent
@@ -20,7 +21,7 @@ from langchain.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model, field_validator
 
 try:
     from .call_logger import call_logger
@@ -55,6 +56,71 @@ OPENROUTER_MODEL_ID = _env_value(
     "LLM_MODEL_ID",
     "LLM_MODEL",
 )
+
+DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "SBER@MISX")
+DEFAULT_UNDERLYING_SYMBOL = os.getenv("DEFAULT_UNDERLYING_SYMBOL", DEFAULT_SYMBOL)
+DEFAULT_TIMEFRAME = os.getenv("DEFAULT_TIMEFRAME", "D")
+DEFAULT_ORDER_ID = os.getenv("DEFAULT_ORDER_ID", "ORDER123")
+DEFAULT_ORDER_QUANTITY = os.getenv("DEFAULT_ORDER_QUANTITY", "1")
+DEFAULT_ORDER_SIDE = os.getenv("DEFAULT_ORDER_SIDE", "BUY")
+DEFAULT_ORDER_TYPE = os.getenv("DEFAULT_ORDER_TYPE", "MARKET")
+DEFAULT_ORDER_TIME_IN_FORCE = os.getenv("DEFAULT_ORDER_TIME_IN_FORCE", "DAY")
+DEFAULT_AUTH_SECRET = os.getenv("DEFAULT_AUTH_SECRET", "demo-secret")
+DEFAULT_SESSION_TOKEN = os.getenv("DEFAULT_SESSION_TOKEN", "demo-token")
+DEFAULT_LIMIT_VALUE = os.getenv("DEFAULT_LIMIT_VALUE", "100")
+DEFAULT_DEPTH_VALUE = os.getenv("DEFAULT_DEPTH_VALUE", "10")
+
+DEFAULT_FIELD_VALUES: Dict[str, Any] = {
+    "account_id": DEFAULT_ACCOUNT_ID,
+    "symbol": DEFAULT_SYMBOL,
+    "underlying_symbol": DEFAULT_UNDERLYING_SYMBOL,
+    "underlyingSymbol": DEFAULT_UNDERLYING_SYMBOL,
+    "timeframe": DEFAULT_TIMEFRAME,
+    "timeFrame": DEFAULT_TIMEFRAME,
+    "order_id": DEFAULT_ORDER_ID,
+    "orderId": DEFAULT_ORDER_ID,
+    "quantity": DEFAULT_ORDER_QUANTITY,
+    "side": DEFAULT_ORDER_SIDE,
+    "type": DEFAULT_ORDER_TYPE,
+    "time_in_force": DEFAULT_ORDER_TIME_IN_FORCE,
+    "timeInForce": DEFAULT_ORDER_TIME_IN_FORCE,
+    "secret": DEFAULT_AUTH_SECRET,
+    "token": DEFAULT_SESSION_TOKEN,
+    "limit": DEFAULT_LIMIT_VALUE,
+    "depth": DEFAULT_DEPTH_VALUE,
+}
+
+
+def _annotation_is_str(annotation: Any) -> bool:
+    if annotation is None:
+        return False
+    if annotation is Any:
+        return False
+    origin = get_origin(annotation)
+    if origin is Union:
+        return any(_annotation_is_str(arg) for arg in get_args(annotation))
+    if isinstance(annotation, type) and issubclass(annotation, str):
+        return True
+    return annotation is str
+
+
+def _normalise_params(args_schema: Type[BaseModel], params: Dict[str, Any]) -> Dict[str, Any]:
+    model_fields = getattr(args_schema, "model_fields", {})
+    if "account_id" in model_fields and "account_id" not in params:
+        params["account_id"] = DEFAULT_ACCOUNT_ID
+
+    for name, field in model_fields.items():
+        if name not in params:
+            default_value = DEFAULT_FIELD_VALUES.get(name)
+            if default_value is not None:
+                params[name] = default_value
+
+        if name in params and params[name] is not None:
+            annotation = getattr(field, "annotation", None)
+            if _annotation_is_str(annotation):
+                params[name] = str(params[name])
+
+    return params
 
 SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "mcp" / "server.py"
 PYTHON_EXECUTABLE = sys.executable or "python"
@@ -232,10 +298,13 @@ class SpecializedAgent:
             - Всегда используй инструменты для получения актуальных данных
             - ВСЕГДА ОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ
             - Форматируй ответы понятно и структурированно
-            - Если данных недостаточно, уточни у пользователя
+            - Если данных недостаточно, не переспрашивай пользователя: используй значения по умолчанию
+              (symbol: {DEFAULT_SYMBOL}, timeframe: {DEFAULT_TIMEFRAME}, order_id: {DEFAULT_ORDER_ID},
+              quantity: {DEFAULT_ORDER_QUANTITY}, side: {DEFAULT_ORDER_SIDE}, type: {DEFAULT_ORDER_TYPE},
+              time_in_force: {DEFAULT_ORDER_TIME_IN_FORCE}) и сразу выполняй вызов подходящего инструмента
             - В случае любой ошибки сразу выдай Final Answer и сообщи пользователю об ошибке. Ни за что не повторяй один и тот же запрос повторно.
             - Если не указан ID аккаунта, используй значение по умолчанию: {DEFAULT_ACCOUNT_ID}
-            - ЕСЛИ ТЕБЕ НЕ ХВАТАЕТ ИНФОРМАЦИИ — УЗНАЙ ЕЁ С ПОМОЩЬЮ ИНСТРУМЕНТОВ. НИКОГДА НЕ ПРЕДПОЛАГАЙ.
+            - ЕСЛИ ТЕБЕ НЕ ХВАТАЕТ ИНФОРМАЦИИ — используй разумные значения по умолчанию и делай лучший доступный запрос.
 
             Thought:
             """
@@ -360,7 +429,55 @@ _JSON_TO_PY: Dict[str, Type[Any]] = {
     "boolean": bool,
     "object": dict,
     "array": list,
+    "null": type(None),
 }
+
+
+_NUMERIC_HINT_KEYWORDS = {
+    "qty",
+    "quantity",
+    "amount",
+    "price",
+    "limit",
+    "notional",
+    "volume",
+    "size",
+    "value",
+}
+
+
+def _looks_numeric(field_name: str, schema_fragment: Dict[str, Any]) -> bool:
+    """Heuristically determine whether a schema field likely accepts numeric values."""
+    lower_name = field_name.lower()
+    if any(keyword in lower_name for keyword in _NUMERIC_HINT_KEYWORDS):
+        return True
+    description = (schema_fragment.get("description") or "").lower()
+    if any(keyword in description for keyword in _NUMERIC_HINT_KEYWORDS):
+        return True
+    return False
+
+
+def _stringify_decimal(value: Any) -> Any:
+    """Convert decimal-ish values to canonical string representation."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):  # bool is a subclass of int, keep original form
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return format(Decimal(str(value)), "f")
+        except (InvalidOperation, ValueError):
+            return str(value)
+    return value
+
+
+def _make_numeric_stringifier(field_name: str):
+    @field_validator(field_name, mode="before")
+    def _validator(cls, v: Any) -> Any:  # type: ignore[override]
+        return _stringify_decimal(v)
+
+    return _validator
 
 
 def jsonschema_to_args_schema(name: str, schema: Optional[Dict[str, Any]]) -> Type[BaseModel]:
@@ -368,17 +485,96 @@ def jsonschema_to_args_schema(name: str, schema: Optional[Dict[str, Any]]) -> Ty
     properties = schema.get("properties") or {}
     required = set(schema.get("required") or [])
     fields: Dict[str, tuple[type[Any], Field[Any]]] = {}
+    validators: Dict[str, classmethod] = {}
+
+    def _collect_types(payload: Dict[str, Any]) -> tuple[List[Type[Any]], bool]:
+        types: List[Type[Any]] = []
+        allows_null = False
+
+        def _push(type_name: Optional[str]) -> None:
+            nonlocal allows_null
+            if not type_name:
+                return
+            py_type = _JSON_TO_PY.get(type_name, str)
+            if py_type is type(None):
+                allows_null = True
+                return
+            if py_type not in types:
+                types.append(py_type)
+
+        def _walk(schema_fragment: Any) -> None:
+            if not isinstance(schema_fragment, dict):
+                return
+
+            schema_type = schema_fragment.get("type")
+            if isinstance(schema_type, list):
+                for entry in schema_type:
+                    _push(str(entry) if entry is not None else None)
+            elif isinstance(schema_type, str):
+                _push(schema_type)
+
+            for keyword in ("anyOf", "oneOf", "allOf"):
+                for option in schema_fragment.get(keyword, []) or []:
+                    _walk(option)
+
+            if "enum" in schema_fragment and isinstance(schema_fragment["enum"], list):
+                for enum_value in schema_fragment["enum"]:
+                    if enum_value is None:
+                        allows_null = True
+                        continue
+                    py_type = type(enum_value)
+                    if py_type not in types:
+                        types.append(py_type)
+
+        _walk(payload)
+        return types, allows_null
+
+    def _build_type(type_candidates: List[Type[Any]], allow_null: bool) -> Type[Any]:
+        cleaned: List[Type[Any]] = []
+        for candidate in type_candidates:
+            if candidate not in cleaned:
+                cleaned.append(candidate)
+        if not cleaned:
+            cleaned = [str]
+        if len(cleaned) == 1:
+            result_type: Type[Any] = cleaned[0]
+        else:
+            result_type = Union[tuple(cleaned)]  # type: ignore[assignment]
+        if allow_null:
+            if result_type is type(None):
+                return result_type
+            null_union = list(cleaned)
+            if type(None) not in null_union:
+                null_union.append(type(None))
+            if len(null_union) == 1:
+                return null_union[0]
+            return Union[tuple(null_union)]  # type: ignore[return-value]
+        return result_type
 
     for key, prop in properties.items():
-        json_type = prop.get("type", "string")
-        py_type = _JSON_TO_PY.get(json_type, str)
+        fragment = prop if isinstance(prop, dict) else {}
+        type_candidates, allow_null = _collect_types(fragment)
+        py_type = _build_type(type_candidates, allow_null)
+
+        numeric_hint = _looks_numeric(key, fragment)
+
+        if py_type is str and numeric_hint:
+            numeric_type: Type[Any] = Union[str, int, float]
+            if allow_null:
+                numeric_type = Union[numeric_type, type(None)]  # type: ignore[assignment,valid-type]
+                allow_null = False
+            py_type = numeric_type
+
+        if numeric_hint and _annotation_is_str(py_type):
+            validators[f"_{key}_numeric_stringifier"] = _make_numeric_stringifier(key)
+
         default = ... if key in required else None
-        fields[key] = (py_type, Field(default, description=prop.get("description")))
+        fields[key] = (py_type, Field(default, description=fragment.get("description")))
 
     if not fields:
-        fields["input"] = (str, Field(..., description="Free-form input"))
+        return create_model(name)  # type: ignore[return-value]
 
-    return create_model(name, **fields)  # type: ignore[return-value]
+    return create_model(name, __validators__=validators, **fields)  # type: ignore[return-value]
 
 
 def _mcp_response_to_text(response: Any) -> str:
@@ -391,10 +587,11 @@ def _mcp_response_to_text(response: Any) -> str:
     return str(response)
 
 
-def _structured_call_factory(session: ClientSession, tool_name: str):
+def _structured_call_factory(
+    session: ClientSession, tool_name: str, args_schema: Type[BaseModel]
+):
     async def _call(**kwargs: Any) -> str:
-        params = dict(kwargs)
-        params.setdefault("account_id", DEFAULT_ACCOUNT_ID)
+        params = _normalise_params(args_schema, dict(kwargs))
 
         try:
             call_logger.log_tool_call(tool_name, params)
@@ -419,7 +616,7 @@ async def create_tools_from_mcp(session: ClientSession) -> List[StructuredTool]:
         for tool in listing.tools:
             schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
             args_schema = jsonschema_to_args_schema(f"{tool.name}Args", schema)
-            coroutine = _structured_call_factory(session, tool.name)
+            coroutine = _structured_call_factory(session, tool.name, args_schema)
             tools.append(
                 StructuredTool(
                     name=tool.name,

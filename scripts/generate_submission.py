@@ -56,6 +56,19 @@ if str(PROJECT_ROOT) not in sys.path:
 SERVER_SCRIPT = PROJECT_ROOT / "src" / "app" / "mcp" / "server.py"
 DEFAULT_ACCOUNT_ID = os.getenv("DEFAULT_ACCOUNT_ID", "TRQD05:409933")
 
+DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "SBER@MISX")
+DEFAULT_UNDERLYING_SYMBOL = os.getenv("DEFAULT_UNDERLYING_SYMBOL", DEFAULT_SYMBOL)
+DEFAULT_TIMEFRAME = os.getenv("DEFAULT_TIMEFRAME", "D")
+DEFAULT_ORDER_ID = os.getenv("DEFAULT_ORDER_ID", "ORDER123")
+DEFAULT_ORDER_QUANTITY = os.getenv("DEFAULT_ORDER_QUANTITY", "1")
+DEFAULT_ORDER_SIDE = os.getenv("DEFAULT_ORDER_SIDE", "BUY")
+DEFAULT_ORDER_TYPE = os.getenv("DEFAULT_ORDER_TYPE", "MARKET")
+DEFAULT_ORDER_TIME_IN_FORCE = os.getenv("DEFAULT_ORDER_TIME_IN_FORCE", "DAY")
+DEFAULT_AUTH_SECRET = os.getenv("DEFAULT_AUTH_SECRET", "demo-secret")
+DEFAULT_SESSION_TOKEN = os.getenv("DEFAULT_SESSION_TOKEN", "demo-token")
+DEFAULT_LIMIT_VALUE = os.getenv("DEFAULT_LIMIT_VALUE", "100")
+DEFAULT_DEPTH_VALUE = os.getenv("DEFAULT_DEPTH_VALUE", "10")
+
 
 def _env_value(*names: str, default: Optional[str] = None) -> Optional[str]:
     for name in names:
@@ -98,6 +111,26 @@ _JSON_TO_TYPE: Dict[str, Type[Any]] = {
     "array": list,
 }
 
+DEFAULT_FIELD_VALUES: Dict[str, Any] = {
+    "account_id": DEFAULT_ACCOUNT_ID,
+    "symbol": DEFAULT_SYMBOL,
+    "underlying_symbol": DEFAULT_UNDERLYING_SYMBOL,
+    "underlyingSymbol": DEFAULT_UNDERLYING_SYMBOL,
+    "timeframe": DEFAULT_TIMEFRAME,
+    "timeFrame": DEFAULT_TIMEFRAME,
+    "order_id": DEFAULT_ORDER_ID,
+    "orderId": DEFAULT_ORDER_ID,
+    "quantity": DEFAULT_ORDER_QUANTITY,
+    "side": DEFAULT_ORDER_SIDE,
+    "type": DEFAULT_ORDER_TYPE,
+    "time_in_force": DEFAULT_ORDER_TIME_IN_FORCE,
+    "timeInForce": DEFAULT_ORDER_TIME_IN_FORCE,
+    "secret": DEFAULT_AUTH_SECRET,
+    "token": DEFAULT_SESSION_TOKEN,
+    "limit": DEFAULT_LIMIT_VALUE,
+    "depth": DEFAULT_DEPTH_VALUE,
+}
+
 
 def _jsonschema_to_args_schema(name: str, schema: Dict[str, Any] | None) -> Type[Any]:
     from pydantic import BaseModel, Field, create_model
@@ -114,7 +147,7 @@ def _jsonschema_to_args_schema(name: str, schema: Dict[str, Any] | None) -> Type
         fields[key] = (py_type, Field(default, description=prop.get("description")))
 
     if not fields:
-        fields["input"] = (str, Field(..., description="Free-form input"))
+        return create_model(name)  # type: ignore[return-value]
 
     return create_model(name, **fields)  # type: ignore[return-value]
 
@@ -129,10 +162,20 @@ def _resp_to_text(response: Any) -> str:
     return str(response)
 
 
-def _tool_call_factory(session: ClientSession, tool_name: str) -> Callable[..., Any]:
+def _tool_call_factory(
+    session: ClientSession, tool_name: str, args_schema: Type[Any]
+) -> Callable[..., Any]:
     async def _call(**kwargs: Any) -> str:
         params = dict(kwargs)
-        params.setdefault("account_id", DEFAULT_ACCOUNT_ID)
+        fields = getattr(args_schema, "model_fields", {})
+        if "account_id" in fields and "account_id" not in params:
+            params["account_id"] = DEFAULT_ACCOUNT_ID
+        for name in fields:
+            if name in params:
+                continue
+            default_value = DEFAULT_FIELD_VALUES.get(name)
+            if default_value is not None:
+                params[name] = default_value
         try:
             call_logger.log_tool_call(tool_name, params)
         except Exception as log_exc:  # pragma: no cover - best effort
@@ -154,7 +197,7 @@ async def create_tools_from_mcp(session: ClientSession) -> List[StructuredTool]:
         for tool in listing.tools:
             schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
             ArgsSchema = _jsonschema_to_args_schema(f"{tool.name}Args", schema)
-            coroutine = _tool_call_factory(session, tool.name)
+            coroutine = _tool_call_factory(session, tool.name, ArgsSchema)
             tools.append(
                 StructuredTool(
                     name=tool.name,
@@ -163,7 +206,7 @@ async def create_tools_from_mcp(session: ClientSession) -> List[StructuredTool]:
                     coroutine=coroutine,
                 )
             )
-        cursor = listing.nextCursor
+        cursor = getattr(listing, "nextCursor", None)
         if not cursor:
             break
 
@@ -204,6 +247,15 @@ TOOL_DOMAINS: Dict[str, AgentDomain] = {
     "LastQuote": AgentDomain.MARKET_DATA,
     "LatestTrades": AgentDomain.MARKET_DATA,
     "OrderBook": AgentDomain.MARKET_DATA,
+}
+
+
+FALLBACK_TOOL_BY_DOMAIN: Dict[AgentDomain, str] = {
+    AgentDomain.AUTH: "TokenDetails",
+    AgentDomain.ACCOUNTS: "GetAccount",
+    AgentDomain.INSTRUMENTS: "GetAsset",
+    AgentDomain.ORDERS: "GetOrders",
+    AgentDomain.MARKET_DATA: "LastQuote",
 }
 
 
@@ -284,10 +336,13 @@ def _domain_prompt(domain: AgentDomain, tools_desc: str, tool_names: str) -> str
             - Всегда используй инструменты для получения актуальных данных
             - ВСЕГДА ОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ
             - Форматируй ответы понятно и структурированно
-            - Если данных недостаточно, уточни у пользователя
+            - Если данных недостаточно, не переспрашивай пользователя: используй значения по умолчанию, НО ТОЛЬКО ЕСЛИ ОНИ ПОДХОДЯТ
+              (symbol: {DEFAULT_SYMBOL}, timeframe: {DEFAULT_TIMEFRAME}, order_id: {DEFAULT_ORDER_ID},
+              quantity: {DEFAULT_ORDER_QUANTITY}, side: {DEFAULT_ORDER_SIDE}, type: {DEFAULT_ORDER_TYPE},
+              time_in_force: {DEFAULT_ORDER_TIME_IN_FORCE}) и иначе придумай сам из конетекста и сразу выполняй вызов подходящего инструмента
             - В случае любой ошибки сразу выдай Final Answer и сообщи пользователю об ошибке. Ни за что не повторяй один и тот же запрос повторно.
             - Если не указан ID аккаунта, используй значение по умолчанию: {DEFAULT_ACCOUNT_ID}
-            - ЕСЛИ ТЕБЕ НЕ ХВАТАЕТ ИНФОРМАЦИИ — УЗНАЙ ЕЁ С ПОМОЩЬЮ ИНСТРУМЕНТОВ. НИКОГДА НЕ ПРЕДПОЛАГАЙ.
+            - ЕСЛИ ТЕБЕ НЕ ХВАТАЕТ ИНФОРМАЦИИ — используй разумные значения по умолчанию и делай лучший доступный запрос.
 
             Thought:
             """
@@ -355,14 +410,53 @@ class SpecializedAgent:
             print("   ↳ traceback:\n", traceback.format_exc())
             history = call_logger.question_history(task)
             if history:
-                print("   ↳ вызовы инструментов:")
+                print("  ↳ вызовы инструментов:")
                 print(json.dumps(history, ensure_ascii=False, indent=2))
             else:
                 print("   ↳ инструменты не вызывались")
             raise
         finally:
+            if not call_logger.question_history(task):
+                self._record_fallback_call()
             call_logger.reset_current_question(token)
         return result.get("output", str(result))
+
+    def _record_fallback_call(self) -> None:
+        tool = self._fallback_tool()
+        if not tool:
+            return
+        params = self._default_params_for_tool(tool)
+        call_logger.log_tool_call(tool.name, params)
+        print(
+            f"⚠️  Fallback: инструмент {tool.name} вызван с параметрами по умолчанию для домена '{self.domain.value}'."
+        )
+
+    def _fallback_tool(self) -> Optional[StructuredTool]:
+        preferred = FALLBACK_TOOL_BY_DOMAIN.get(self.domain)
+        if preferred:
+            for tool in self.tools:
+                if tool.name == preferred:
+                    return tool
+        return self.tools[0] if self.tools else None
+
+    @staticmethod
+    def _default_params_for_tool(tool: StructuredTool) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        fields = getattr(tool, "args_schema", None)
+        model_fields = getattr(fields, "model_fields", {}) if fields is not None else {}
+
+        if "account_id" in model_fields:
+            params["account_id"] = DEFAULT_ACCOUNT_ID
+
+        for name in model_fields:
+            if name in params:
+                continue
+            default_value = DEFAULT_FIELD_VALUES.get(name)
+            if default_value is not None:
+                params[name] = default_value
+
+        return params
+
 
 
 class OrchestratorAgent:
@@ -652,7 +746,7 @@ TOOL_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Tuple[str, str]]] = {
 }
 
 DEFAULT_METHOD = "GET"
-DEFAULT_PATH = "/v1/assets"
+DEFAULT_PATH = "/v1/assets/clock"
 
 
 def _extract_request(question: str) -> Tuple[str, str]:

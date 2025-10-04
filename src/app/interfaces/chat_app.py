@@ -1,188 +1,198 @@
 #!/usr/bin/env python3
-"""
-Streamlit веб-интерфейс для AI ассистента трейдера
+"""Streamlit веб-клиент поверх MCP-оркестратора."""
 
-Использование:
-    poetry run streamlit run src/app/chat_app.py
-    streamlit run src/app/chat_app.py
-"""
+from __future__ import annotations
 
-import json
+import os
+from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 
-from finam_client import FinamAPIClient
-from src.app.core import call_llm, get_settings
+from src.app.interfaces import mcp_agent
+from src.app.interfaces.call_logger import call_logger
+from src.app.interfaces.mcp_streamlit_service import MCPOrchestratorService
 
 
-def create_system_prompt() -> str:
-    """Создать системный промпт для AI ассистента"""
-    return """Ты - AI ассистент трейдера, работающий с Finam TradeAPI.
-
-Когда пользователь задает вопрос о рынке, портфеле или хочет совершить действие:
-1. Определи нужный API endpoint
-2. Укажи запрос в формате: API_REQUEST: METHOD /path
-3. После получения данных - проанализируй их и дай понятный ответ
-
-Доступные endpoints:
-- GET /v1/instruments/{symbol}/quotes/latest - котировка
-- GET /v1/instruments/{symbol}/orderbook - стакан
-- GET /v1/instruments/{symbol}/bars - свечи
-- GET /v1/accounts/{account_id} - счет и позиции
-- GET /v1/accounts/{account_id}/orders - ордера
-- POST /v1/accounts/{account_id}/orders - создать ордер
-- DELETE /v1/accounts/{account_id}/orders/{order_id} - отменить ордер
-
-Отвечай на русском, кратко и по делу."""
+DEFAULT_BASE_URL = os.getenv("FINAM_API_BASE_URL", "https://api.finam.ru")
 
 
-def extract_api_request(text: str) -> tuple[str | None, str | None]:
-    """Извлечь API запрос из ответа LLM"""
-    if "API_REQUEST:" not in text:
-        return None, None
-
-    lines = text.split("\n")
-    for line in lines:
-        if line.strip().startswith("API_REQUEST:"):
-            request = line.replace("API_REQUEST:", "").strip()
-            parts = request.split(maxsplit=1)
-            if len(parts) == 2:
-                return parts[0], parts[1]
-    return None, None
+def _env_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return ""
 
 
-def main() -> None:  # noqa: C901
-    """Главная функция Streamlit приложения"""
-    st.set_page_config(page_title="AI Трейдер (Finam)", page_icon="🤖", layout="wide")
-
-    # Заголовок
-    st.title("🤖 AI Ассистент Трейдера")
-    st.caption("Интеллектуальный помощник для работы с Finam TradeAPI")
-
-    # Sidebar с настройками
-    with st.sidebar:
-        st.header("⚙️ Настройки")
-        settings = get_settings()
-        st.info(f"**Модель:** {settings.openrouter_model}")
-
-        # Finam API настройки
-        with st.expander("🔑 Finam API", expanded=False):
-            api_token = st.text_input(
-                "Access Token",
-                type="password",
-                help="Токен доступа к Finam TradeAPI (или используйте FINAM_ACCESS_TOKEN)",
-            )
-            api_base_url = st.text_input("API Base URL", value="https://api.finam.ru", help="Базовый URL API")
-
-        account_id = st.text_input("ID счета", value="", help="Оставьте пустым если не требуется")
-
-        if st.button("🔄 Очистить историю"):
-            st.session_state.messages = []
-            st.rerun()
-
-        st.markdown("---")
-        st.markdown("### 💡 Примеры вопросов:")
-        st.markdown("""
-        - Какая цена Сбербанка?
-        - Покажи мой портфель
-        - Что в стакане по Газпрому?
-        - Покажи свечи YNDX за последние дни
-        - Какие у меня активные ордера?
-        - Детали моей сессии
-        """)
-
-    # Инициализация состояния
+def _ensure_state_defaults() -> None:
     if "messages" not in st.session_state:
-        st.session_state.messages = []
+        st.session_state.messages: List[Dict[str, Any]] = []
+    if "finam_token" not in st.session_state:
+        st.session_state.finam_token = os.getenv("FINAM_ACCESS_TOKEN", "")
+    if "finam_base_url" not in st.session_state:
+        st.session_state.finam_base_url = DEFAULT_BASE_URL
+    if "account_id" not in st.session_state:
+        st.session_state.account_id = mcp_agent.DEFAULT_ACCOUNT_ID
+    if "_initial_defaults" not in st.session_state:
+        st.session_state._initial_defaults = {
+            "account_id": mcp_agent.DEFAULT_ACCOUNT_ID,
+            "account_id_alt": mcp_agent.DEFAULT_FIELD_VALUES.get("accountId", mcp_agent.DEFAULT_ACCOUNT_ID),
+        }
 
-    # Инициализация Finam API клиента
-    finam_client = FinamAPIClient(access_token=api_token or None, base_url=api_base_url if api_base_url else None)
 
-    # Проверка токена
-    if not finam_client.access_token:
-        st.sidebar.warning(
-            "⚠️ Finam API токен не установлен. Установите в переменной окружения FINAM_ACCESS_TOKEN или введите выше."
-        )
-    else:
-        st.sidebar.success("✅ Finam API токен установлен")
+def _reset_service() -> None:
+    service = st.session_state.pop("mcp_service", None)
+    if service is not None:
+        try:
+            service.close()
+        except Exception as exc:  # pragma: no cover - best effort logging
+            st.sidebar.warning(f"⚠️ Не удалось корректно остановить MCP: {exc}")
+    st.session_state.pop("mcp_service_config", None)
 
-    # Отображение истории сообщений
+
+def _apply_account_defaults(account_id: str) -> str:
+    initial_account = st.session_state._initial_defaults["account_id"]
+    account_for_use = account_id or initial_account
+
+    mcp_agent.DEFAULT_ACCOUNT_ID = account_for_use
+    mcp_agent.DEFAULT_FIELD_VALUES["account_id"] = account_for_use
+    mcp_agent.DEFAULT_FIELD_VALUES["accountId"] = account_for_use
+    return account_for_use
+
+
+def _service_config() -> Tuple[str, str, str]:
+    token = (st.session_state.finam_token or "").strip()
+    base_url = (st.session_state.finam_base_url or DEFAULT_BASE_URL).strip()
+    account_id = (st.session_state.account_id or "").strip()
+    return token, base_url, account_id
+
+
+def _get_service() -> MCPOrchestratorService:
+    token, base_url, account_id = _service_config()
+    current_config = st.session_state.get("mcp_service_config")
+    service: MCPOrchestratorService | None = st.session_state.get("mcp_service")
+
+    if current_config != (token, base_url, account_id) and service is not None:
+        _reset_service()
+        service = None
+
+    if service is None:
+        account_for_use = _apply_account_defaults(account_id)
+
+        if token:
+            os.environ["FINAM_ACCESS_TOKEN"] = token
+        elif "FINAM_ACCESS_TOKEN" in os.environ:
+            os.environ.pop("FINAM_ACCESS_TOKEN")
+
+        os.environ["FINAM_API_BASE_URL"] = base_url or DEFAULT_BASE_URL
+        os.environ["DEFAULT_ACCOUNT_ID"] = account_for_use
+
+        service = MCPOrchestratorService()
+        st.session_state.mcp_service = service
+        st.session_state.mcp_service_config = (token, base_url, account_id)
+
+    return service
+
+
+def _render_history() -> None:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-            # Показываем API запросы
-            if "api_request" in message:
-                with st.expander("🔍 API запрос"):
-                    st.code(f"{message['api_request']['method']} {message['api_request']['path']}", language="http")
-                    st.json(message["api_request"]["response"])
+            tool_calls: List[Dict[str, Any]] = message.get("tool_calls", [])  # type: ignore[assignment]
+            if tool_calls:
+                with st.expander("🔧 Вызовы MCP инструментов", expanded=False):
+                    for idx, call in enumerate(tool_calls, start=1):
+                        st.markdown(f"**#{idx}** {call['tool']}")
+                        st.json(call.get("params", {}))
 
-    # Поле ввода
-    if prompt := st.chat_input("Напишите ваш вопрос..."):
-        # Добавляем сообщение пользователя
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
 
-        # Формируем историю для LLM
-        conversation_history = [{"role": "system", "content": create_system_prompt()}]
-        for msg in st.session_state.messages:
-            conversation_history.append({"role": msg["role"], "content": msg["content"]})
+def main() -> None:  # noqa: C901
+    st.set_page_config(page_title="AI Трейдер (Finam)", page_icon="🤖", layout="wide")
+    _ensure_state_defaults()
 
-        # Получаем ответ от ассистента
-        with st.chat_message("assistant"), st.spinner("Думаю..."):
+    st.title("🤖 AI Ассистент Трейдера")
+    st.caption("Интерфейс поверх MCP-оркестратора Finam TradeAPI")
+
+    with st.sidebar:
+        st.header("⚙️ Настройки")
+
+        model_name = _env_value("OPENROUTER_MODEL", "COMET_MODEL_ID", "LLM_MODEL_ID") or "openai/gpt-4o-mini"
+        st.info(f"**Модель:** {model_name}")
+
+        with st.expander("🔑 Finam API", expanded=False):
+            st.session_state.finam_token = st.text_input(
+                "Access Token",
+                value=st.session_state.finam_token,
+                type="password",
+                help="Токен доступа к Finam TradeAPI (FINAM_ACCESS_TOKEN)",
+            )
+            st.session_state.finam_base_url = st.text_input(
+                "API Base URL",
+                value=st.session_state.finam_base_url,
+                help="Базовый URL API",
+            )
+
+        st.session_state.account_id = st.text_input(
+            "ID счёта",
+            value=st.session_state.account_id,
+            help="Используется, если вопрос не содержит явно account_id",
+        )
+
+        if st.button("🔄 Очистить историю"):
+            st.session_state.messages = []
+            _reset_service()
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 💡 Примеры вопросов:")
+        st.markdown(
+            """
+        - Авторизуйся с моим токеном
+        - Покажи баланс и позиции
+        - Какие последние сделки по Сберу?
+        - Построй стакан по Газпрому
+        - Создай рыночный ордер на покупку
+        """
+        )
+
+        api_key_present = bool(_env_value("OPENROUTER_API_KEY", "COMET_API_KEY", "LLM_API_KEY"))
+        if api_key_present:
+            st.success("✅ Ключ OpenRouter установлен")
+        else:
+            st.warning("⚠️ Укажите OPENROUTER_API_KEY (или COMET_API_KEY/LLM_API_KEY)")
+
+    _render_history()
+
+    prompt = st.chat_input("Напишите ваш вопрос...")
+    if not prompt:
+        return
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Думаю..."):
             try:
-                response = call_llm(conversation_history, temperature=0.3)
-                assistant_message = response["choices"][0]["message"]["content"]
+                service = _get_service()
+                response_text = service.process_request(prompt)
+                tool_calls = call_logger.question_history(prompt)
 
-                # Проверяем API запрос
-                method, path = extract_api_request(assistant_message)
+                st.markdown(response_text)
 
-                api_data = None
-                if method and path:
-                    # Подставляем account_id если есть
-                    if account_id and "{account_id}" in path:  # noqa: RUF027
-                        path = path.replace("{account_id}", account_id)
+                if tool_calls:
+                    with st.expander("🔧 Вызовы MCP инструментов", expanded=False):
+                        for idx, call in enumerate(tool_calls, start=1):
+                            st.markdown(f"**#{idx}** {call['tool']}")
+                            st.json(call.get("params", {}))
 
-                    # Показываем что делаем запрос
-                    st.info(f"🔍 Выполняю запрос: `{method} {path}`")
-
-                    # Выполняем API запрос
-                    api_response = finam_client.execute_request(method, path)
-
-                    # Проверяем на ошибки
-                    if "error" in api_response:
-                        st.error(f"⚠️ Ошибка API: {api_response.get('error')}")
-                        if "details" in api_response:
-                            st.error(f"Детали: {api_response['details']}")
-
-                    # Показываем результат
-                    with st.expander("📡 Ответ API", expanded=False):
-                        st.json(api_response)
-
-                    api_data = {"method": method, "path": path, "response": api_response}
-
-                    # Добавляем результат в контекст
-                    conversation_history.append({"role": "assistant", "content": assistant_message})
-                    conversation_history.append({
-                        "role": "user",
-                        "content": f"Результат API: {json.dumps(api_response, ensure_ascii=False)}\n\nПроанализируй.",
-                    })
-
-                    # Получаем финальный ответ
-                    response = call_llm(conversation_history, temperature=0.3)
-                    assistant_message = response["choices"][0]["message"]["content"]
-
-                st.markdown(assistant_message)
-
-                # Сохраняем сообщение ассистента
-                message_data = {"role": "assistant", "content": assistant_message}
-                if api_data:
-                    message_data["api_request"] = api_data
+                message_data: Dict[str, Any] = {"role": "assistant", "content": response_text}
+                if tool_calls:
+                    message_data["tool_calls"] = tool_calls
                 st.session_state.messages.append(message_data)
-
-            except Exception as e:
-                st.error(f"❌ Ошибка: {e}")
+            except Exception as exc:
+                st.error(f"❌ Ошибка: {exc}")
 
 
 if __name__ == "__main__":
