@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 
-from src.app.interfaces import mcp_agent
 from src.app.interfaces.call_logger import call_logger
 from src.app.interfaces.mcp_streamlit_service import MCPOrchestratorService
 
@@ -25,6 +24,7 @@ def _env_value(*names: str) -> str:
 
 
 def _ensure_state_defaults() -> None:
+    """Устанавливает значения по умолчанию в состоянии сессии."""
     if "messages" not in st.session_state:
         st.session_state.messages: List[Dict[str, Any]] = []
     if "finam_token" not in st.session_state:
@@ -32,11 +32,11 @@ def _ensure_state_defaults() -> None:
     if "finam_base_url" not in st.session_state:
         st.session_state.finam_base_url = DEFAULT_BASE_URL
     if "account_id" not in st.session_state:
-        st.session_state.account_id = mcp_agent.DEFAULT_ACCOUNT_ID
+        st.session_state.account_id = os.getenv("DEFAULT_ACCOUNT_ID", "")
     if "_initial_defaults" not in st.session_state:
         st.session_state._initial_defaults = {
-            "account_id": mcp_agent.DEFAULT_ACCOUNT_ID,
-            "account_id_alt": mcp_agent.DEFAULT_FIELD_VALUES.get("accountId", mcp_agent.DEFAULT_ACCOUNT_ID),
+            "account_id": os.getenv("DEFAULT_ACCOUNT_ID", ""),
+            "account_id_alt": os.getenv("DEFAULT_ACCOUNT_ID", ""),
         }
 
 
@@ -53,10 +53,8 @@ def _reset_service() -> None:
 def _apply_account_defaults(account_id: str) -> str:
     initial_account = st.session_state._initial_defaults["account_id"]
     account_for_use = account_id or initial_account
-
-    mcp_agent.DEFAULT_ACCOUNT_ID = account_for_use
-    mcp_agent.DEFAULT_FIELD_VALUES["account_id"] = account_for_use
-    mcp_agent.DEFAULT_FIELD_VALUES["accountId"] = account_for_use
+    # Store the account ID in environment for use by the MCP server
+    os.environ["DEFAULT_ACCOUNT_ID"] = account_for_use
     return account_for_use
 
 

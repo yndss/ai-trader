@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 
 try:
-    from finam_client import FinamAPIClient
+    from src.finam_client import FinamAPIClient
 except ImportError:  # pragma: no cover - fallback if namespace import fails
-    from finam_client.client import FinamAPIClient  # type: ignore
+    from src.finam_client.client import FinamAPIClient  # type: ignore
 
 try:
     from dotenv import load_dotenv
@@ -27,21 +27,24 @@ if load_dotenv is not None:
     else:
         load_dotenv()
 
-
-mcp = FastMCP("FinamTrader")
-api_client = FinamAPIClient(access_token="eyJraWQiOiIxNGU4MjNmZC00YWRjLTRmYzQtOGI1Yi02YmRmNGZjZWIwNTkiLCJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhcmVhIjoidHQiLCJwYXJlbnQiOiJkYzIyMjkwOC1lY2E5LTQyZjktOGM2Zi1hZWI3YzdlZDMyNGIiLCJzY29udGV4dCI6IkNpZ0lBeElrTkRkaFlqQXlZMk10WXpWbE1DMDBORGN6TFdGbVpqSXRPR1ppTkRGaU16QTJZbVJoQ2lnSUJSSWtaR015TWpJNU1EZ3RaV05oT1MwME1tWTVMVGhqTm1ZdFlXVmlOMk0zWldRek1qUmlDZ1VJQ0JJQk13b0VDQWtTQUFvSkNBQVNCV2gwYld3MUNoQUlCeElNZEhKaFpHVmZZWEJwWDNKMUNna0lDaElGTVM0MkxqUUtLQWdDRWlRM05EUXhaVEptTVMwNVpUSmpMVEV4WmpBdE9EUTNOeTB4TXpGaE9EWTNaRFZsWkdJS0tBZ0VFaVF4TkdVNE1qTm1aQzAwWVdSakxUUm1ZelF0T0dJMVlpMDJZbVJtTkdaalpXSXdOVGthREFpSWw0WEhCaERBM2U3QkFpSU1DSStlaGNjR0VNRGQ3c0VDS0FFeVJ3b1BSbFJmUzFKQlZFOVRYME5TUlVSVEVBRVlBU0FCS2dkRlJFOVlYMFJDT2dJSUEwb1RDZ01JaHdjU0JRaUhvWjRCR2dVSWg1YkRBVmdDWUFGb0FYSUdWSGhCZFhSbyIsInppcHBlZCI6dHJ1ZSwiY3JlYXRlZCI6IjE3NTk1OTU0MDAiLCJyZW5ld0V4cCI6IjE3NjIxODgzMDMiLCJzZXNzIjoiSDRzSUFBQUFBQUFBLzNWVVMyL2pWQlNPNjZTTmJGV2tkelF6cUJ0UW1RV3FsQ3FKbmJSaGhlM1lpV2x1NHZyYXJjUEdjaElQUktUSmtNZWdZY21iQVJaZUlDRjJzR0hKZ2gwNy9nYmlENERFZitEY1I2ck10R3krNzl4enYzUE9QVDRuUVg5SXltdktybDVwTmpVTjdRYitSYXRTUDl6bi9CWjNsNlRYZDQrUGxaS3lXMjlVdGRxTkRQejU1OUplOGU5WFNzcXI4ajhiNjBCb203V20xdGpTU3YrdmJWYWF0WWErcFpYdjB0WjJwTnhkL3NOZjg4V2RvOXp4bmxKNHd6ZjlGamNzMDJmRzFaWGxIZThxZVFOSGZjYStGVkUyallBd3ZzUU9aVHZ5TUdYWGp0cU1IVHZrSERJZGRnbUw2L2NEaTdIbkc0d0R5eFNNQlY5UTl0eWVKZGdWM0JYTThuaWt6ZlIrd1BQNkllZkl3SVF6c1FWenY5bkhuUDJRYzhqdkxkTVJISEMyTGM2WTM5dUJ6OWpoNzQzYUJ0ZDF6aDNCck4rbzIrcHhGbkZkVWEvYjUzNXN0QmozRFA2K0h1ODM2clhGV2J5N054RCtBVDk3QnE5UE9yWmdYbzljOGI2Q2MwSUhGWnM5eTJLR1pib3NJclpnTXN6aER6eG0yS0Z2TWdOajgxMW05RHlmVFRVbWxudGNVT1NZY0NYeGhJQjQ0eW96QXQ4bU5TbjNzN1NqNUE2L3p4ZGxKQnQyQkVCc0NoY1U0QWhyQVhCQmdWN0FSMFo1Y3o0Ym93TEZKWkxoYzFNQWdkVnhBYkJOQVNLdFN4dnR0ZDV4ZXkyYTFnNGp4SFlLN1RrT2pyRmZSWG5IN1JsSW9ZampWaGdNVU1IcHcvaVI3RUNwSFFlaTJyYVA1STRES1dFcVNIYnRFQ0FFUmRjYUFOQmFYZm9zbUFXQUJSRVlpdVV4TnVBcDJMOUVNa3dIQUZNZ0xnVk1BYnFEc1ZCZ0ZrRnNqWkhjSndaaUc4d1FNd1FGakF5eEJXYm9NdXd5aEdMZU9ha3kxQmpxSUljbnNYMUdzbS9CaC9FREV4WDhFSDZCU0NaR0g4QW1GT0NLdENFRFFCbk1UZ2ZBaFNBU1FDT3dEa2dPV3RCMTBMMUUrUUI2QXJNUEtZSUJwQWdOdUw2aXZVY1FrcWZiZ3ZqTzBFUGdNSVMrWW91MlFWY0g4Y1ZCZkczQTEyNFppSzhPNGd1QytGWWM1VzcyNGkrNUtCKysrVW1tZnBxcG4yWHE1NW42UmFaK21hbGZaZXJYbWZvOFU3L0oxRzh6OWJ0TS9lMkhmeVVSK0l1cy9DUXI5ejljejFmcHlUUlpydUxWSWhtbjhYTHljYW84dU9VZXpkZXpsWEt3NVg4Nm42NnZVNlcwN1VxbTY1dmdKNHZKS04xTyt2QzJuMmRGMnhjaTdjRUxQcFozbjd1R2t6RVZiWTdKOGdOMnZNZVA4eWZwTEo3TVZ1a2lYYTQyVGhFU3IrYXJaTHJwZWJoK0ZzOFg0M1FoWG5IdmhYeENLM3BacHRQcFhlS1A2cldUNjJUejVnZFFGOXBLbnNXalpEYWVwaWZDZi8rV24vVnpjRnRaZWxtRUpPVW9WUjQxUmlOOWVIcjZ1RHpXUjlXeVhoM3E1VVN2NjJXOWNmcTRVcWszenJSbWV2UndPVTJlSnFQMzAwVk5xOVRmZnU4Nm1VeFBSdlByNFNPdGRkYW9PSnBlcmpTTVpsblhUYjE4WmhpblpVMnZWczVNelc1V1RQdEhLVitVVU81M2FWLzhRY0hQeXV4SGYwb0YweUN1OVIvU0M0cmdjd2NBQUEiLCJpc3MiOiJ0eHNlcnZlciIsImtleUlkIjoiMTRlODIzZmQtNGFkYy00ZmM0LThiNWItNmJkZjRmY2ViMDU5IiwiZmlyZWJhc2UiOiIiLCJzZWNyZXRzIjoiRjRYc29HMU15WXB0dlBwMjRPU0pWdz09IiwicHJvdmlkZXIiOiJGVF9LUkFUT1NfQ1JFRFMiLCJzY29wZSI6IkNBRVFEUSIsInRzdGVwIjoiZmFsc2UiLCJzcGluUmVxIjpmYWxzZSwiZXhwIjoxNzU5NTk2MzAzLCJzcGluRXhwIjoiMTc2Mjc5MzEwMyIsImp0aSI6IjQ3YWIwMmNjLWM1ZTAtNDQ3My1hZmYyLThmYjQxYjMwNmJkYSJ9.dqVIMsKkv13e39qxx7GI-tR9zf7RQEb-9hp_PLLuFmAo1cZ1Cw9QHp6sTjMd5tvlSkohFimkEHTwDApnJ9P58A")
-
 _DEFAULT_SECRET = os.getenv("FINAM_AUTH_SECRET") or os.getenv("FINAM_ACCESS_TOKEN") or ""
 _CURRENT_TOKEN: Optional[str] = None
+
+mcp = FastMCP("FinamTrader")
+api_client = FinamAPIClient(
+    access_token=_DEFAULT_SECRET
+)
 
 
 def _set_authorization(token: Optional[str]) -> None:
     global _CURRENT_TOKEN
     if token:
         formatted = token.strip()
+        api_client.access_token = formatted  # Обновляем токен в самом клиенте
         api_client.session.headers["Authorization"] = formatted
         _CURRENT_TOKEN = formatted
     else:
+        api_client.access_token = ""  # Очищаем токен в самом клиенте
         api_client.session.headers.pop("Authorization", None)
         _CURRENT_TOKEN = None
 
@@ -49,6 +52,9 @@ def _set_authorization(token: Optional[str]) -> None:
 _initial_auth = api_client.session.headers.get("Authorization")
 if _initial_auth:
     _set_authorization(_initial_auth)
+elif _DEFAULT_SECRET:
+    # Убеждаемся, что токен из переменной окружения установлен в заголовки
+    _set_authorization(_DEFAULT_SECRET)
 
 
 def _exchange_secret_for_token(secret: str) -> Dict[str, Any]:
@@ -91,6 +97,31 @@ async def Auth(secret: str) -> dict:
             - token (str): Received JWT token
     """
     return api_client.execute_request("POST", "/v1/sessions", json={"secret": secret})
+
+@mcp.tool()
+async def SetAuthToken(token: str) -> dict:
+    """
+    Set authorization token for API client
+    
+    Args:
+        token: Access token (JWT or secret key)
+    
+    Returns:
+        dict: Status information with the following structure:
+            - status (str): Status message
+            - token_set (bool): Whether token was successfully set
+    """
+    try:
+        _set_authorization(token)
+        return {
+            "status": "Authorization token set successfully",
+            "token_set": True
+        }
+    except Exception as e:
+        return {
+            "status": f"Failed to set token: {str(e)}",
+            "token_set": False
+        }
 
 @mcp.tool()
 async def TokenDetails(token: str) -> dict:
