@@ -30,6 +30,13 @@ COMETAPI_BASE_URL = os.getenv("COMETAPI_BASE_URL", "https://api.cometapi.com/v1"
 MODEL_ID = os.getenv("MODEL_ID", "qwen2.5-32b-instruct")
 COMET_API_KEY = os.getenv("COMET_API_KEY", "sk-eda8aMPSz9nfgZwaVTAvkkLZtXMiiyLMLbna3GixHlfa7G2K")
 
+# Default values for Finam API
+DEFAULT_ACCOUNT_ID = os.getenv("DEFAULT_ACCOUNT_ID", "")
+DEFAULT_FIELD_VALUES = {
+    "account_id": DEFAULT_ACCOUNT_ID,
+    "accountId": DEFAULT_ACCOUNT_ID,
+}
+
 
 class AgentDomain(Enum):
     """Домены специализированных агентов"""
@@ -573,14 +580,19 @@ SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "mcp" / "server.py"
 PYTHON_EXEC = sys.executable or "python"
 
 
-async def main() -> None:
-    """Главная функция запуска системы"""
-    llm = ChatOpenAI(
+def build_llm() -> ChatOpenAI:
+    """Создает и возвращает настроенную модель LLM"""
+    return ChatOpenAI(
         model=MODEL_ID,
         base_url=COMETAPI_BASE_URL,
         api_key=COMET_API_KEY,
         temperature=0,
     )
+
+
+async def main() -> None:
+    """Главная функция запуска системы"""
+    llm = build_llm()
 
     server_params = StdioServerParameters(
         command=PYTHON_EXEC,

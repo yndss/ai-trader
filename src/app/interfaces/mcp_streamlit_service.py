@@ -13,7 +13,7 @@ from mcp.client.stdio import stdio_client
 
 from src.app.interfaces.mcp_agent import (
     SERVER_SCRIPT,
-    PYTHON_EXECUTABLE,
+    PYTHON_EXEC,
     OrchestratorAgent,
     SpecializedAgent,
     build_llm,
@@ -44,7 +44,7 @@ class MCPOrchestratorService:
         self._lock = threading.Lock()
         self._state: Optional[MCPServiceState] = None
         self._server_script = server_script
-        self._python_executable = python_executable or PYTHON_EXECUTABLE
+        self._python_executable = python_executable or PYTHON_EXEC
         self._stdio_ctx = None
         self._session_ctx = None
 
