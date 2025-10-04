@@ -128,6 +128,101 @@ class SpecializedAgent:
 Доступные инструменты:
 {tools_desc}
 
+Роснефть - ROSN@MISX
+
+Газпром - GAZP@MISX
+
+Газпром Нефть - SIBN@MISX
+
+Лукойл - LKOH@MISX
+
+Татнефть - TATN@MISX
+
+АЛРОСА - ALRS@MISX
+
+Сургутнефтегаз - SNGS@MISX
+
+РУСАЛ - RUAL@MISX
+
+Amazon - AMZN@XNGS
+
+ВТБ - VTBR@MISX
+
+Сбер / Сбербанк - SBERP@MISX, SBER@MISX
+
+Microsoft - MSFT@XNGS
+
+Аэрофлот - AFLT@MISX
+
+Магнит - MGNT@MISX
+
+Норникель - GMKN@MISX, GKZ5@RTSX (фьючерсы)
+
+Северсталь - CHZ5@RTSX (фьючерсы), CHMF@MISX
+
+ФосАгро - PHOR@MISX
+
+Юнипро - UPRO@MISX
+
+Распадская - RASP@MISX
+
+Полюс - PLZL@MISX
+
+X5 Retail Group
+
+ПИК - PIKK@MISX
+
+МТС - MTSS@MISX
+
+Новатэк - NVTK@MISX
+
+МЕЧЕЛ - MTLR@MISX
+
+Яндекс - YDEX@MISX
+Ozon - OZON@MISX 
+VK - VKCO@MISX 
+Московская биржа - MOEX@MISX 
+АФК «Система» - AFKS@MISX 
+МКБ - CBOM@MISX 
+Русагро - RAGR@MISX
+ФСК ЕЭС - FEES@MISX 
+НЛМК - NLMK@MISX 
+Транснефть - TRNFP@MISX 
+Полиметалл - PLZL@MISX 
+TCS Group (Тинькофф) - T@MISX
+Интер РАО - IRAO@MISX 
+X5 Retail Group - X5@MISX 
+Apple - AAPL@XNGS 
+Tesla - TSLA@XNGS 
+HeadHunter - HEAD@MISX 
+Amazon - AMZN@XNGS
+
+фьючерсы 
+Фьючерс индекс РТС - RIZ5@RTSX
+Фьючерс доллар-рубль - SiZ5@RTSX
+Фьючерс Brent - BRZ5@RTSX
+Фьючерс природный газ - NGZ5@RTSX
+Фьючерс евро-рубль - EuZ5@RTSX
+Юань/Рубль (TOM) - CNYRUB_TOM@MISX
+Золото/Рубль (TOM) - GLDRUB_TOM@MISX
+
+период за все время: 2014-01-01T00:00:00Z - сегодня 
+
+Доступные таймфреймы 
+
+TIME_FRAME_M1	1 минута. Глубина данных 7 дней.
+TIME_FRAME_M5	5 минут. Глубина данных 30 дней.
+TIME_FRAME_M15	15 минут. Глубина данных 30 дней.
+TIME_FRAME_M30	30 минут. Глубина данных 30 дней.
+TIME_FRAME_H1	1 час. Глубина данных 30 дней.
+TIME_FRAME_H2	2 часа. Глубина данных 30 дней.
+TIME_FRAME_H4	4 часа. Глубина данных 30 дней.
+TIME_FRAME_H8	8 часов. Глубина данных 30 дней.
+TIME_FRAME_D	1 День. Глубина данных 365 дней.
+TIME_FRAME_W	Неделя. Глубина данных 5 лет.
+TIME_FRAME_MN	Месяц. Глубина данных 5 лет.
+TIME_FRAME_QR	Квартал (3 месяца). Глубина данных 5 лет.
+
 
 Используй JSON для вызова инструментов:
 ```
