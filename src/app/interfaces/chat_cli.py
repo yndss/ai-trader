@@ -11,7 +11,7 @@ import sys
 
 import click
 
-from src.app.adapters import FinamAPIClient
+from finam_client import FinamAPIClient
 from src.app.core import call_llm, get_settings
 
 

@@ -11,21 +11,17 @@ import traceback
 from enum import Enum
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, ClassVar, Dict, Iterable, List, Optional
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, Iterable, List, Optional, Type, Union, get_args, get_origin
 
 from dotenv import load_dotenv
 from langchain.agents import AgentExecutor, AgentType, initialize_agent
 from langchain.memory import ConversationBufferWindowMemory
-from langchain.tools.base import BaseTool
-from langchain_core.prompts import MessagesPlaceholder
+from langchain.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import CallToolResult, TextContent
-from langchain.schema import OutputParserException
-from pydantic import PrivateAttr
-
-load_dotenv()
+from pydantic import BaseModel, Field, create_model, field_validator
 
 try:
     from .call_logger import call_logger
@@ -33,50 +29,147 @@ except ImportError:  # pragma: no cover - fallback for standalone execution
     from call_logger import call_logger  # type: ignore
 
 
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL_ID = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ENV_PATH = PROJECT_ROOT / ".env"
+
+if ENV_PATH.exists():
+    load_dotenv(dotenv_path=ENV_PATH)
+else:
+    load_dotenv()
+
+
+def _env_value(*names: str) -> Optional[str]:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+DEFAULT_ACCOUNT_ID = os.getenv("DEFAULT_ACCOUNT_ID", "TRQD05:409933")
+
+OPENROUTER_API_KEY = _env_value("OPENROUTER_API_KEY", "COMET_API_KEY", "LLM_API_KEY")
+OPENROUTER_BASE_URL = _env_value("OPENROUTER_BASE", "COMET_BASE_URL", "LLM_BASE_URL")
+OPENROUTER_MODEL_ID = _env_value(
+    "OPENROUTER_MODEL",
+    "COMET_MODEL_ID",
+    "LLM_MODEL_ID",
+    "LLM_MODEL",
+)
+
+DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "SBER@MISX")
+DEFAULT_UNDERLYING_SYMBOL = os.getenv("DEFAULT_UNDERLYING_SYMBOL", DEFAULT_SYMBOL)
+DEFAULT_TIMEFRAME = os.getenv("DEFAULT_TIMEFRAME", "D")
+DEFAULT_ORDER_ID = os.getenv("DEFAULT_ORDER_ID", "ORDER123")
+DEFAULT_ORDER_QUANTITY = os.getenv("DEFAULT_ORDER_QUANTITY", "1")
+DEFAULT_ORDER_SIDE = os.getenv("DEFAULT_ORDER_SIDE", "BUY")
+DEFAULT_ORDER_TYPE = os.getenv("DEFAULT_ORDER_TYPE", "MARKET")
+DEFAULT_ORDER_TIME_IN_FORCE = os.getenv("DEFAULT_ORDER_TIME_IN_FORCE", "DAY")
+DEFAULT_AUTH_SECRET = os.getenv("DEFAULT_AUTH_SECRET", "demo-secret")
+DEFAULT_SESSION_TOKEN = os.getenv("DEFAULT_SESSION_TOKEN", "demo-token")
+DEFAULT_LIMIT_VALUE = os.getenv("DEFAULT_LIMIT_VALUE", "100")
+DEFAULT_DEPTH_VALUE = os.getenv("DEFAULT_DEPTH_VALUE", "10")
+
+DEFAULT_FIELD_VALUES: Dict[str, Any] = {
+    "account_id": DEFAULT_ACCOUNT_ID,
+    "symbol": DEFAULT_SYMBOL,
+    "underlying_symbol": DEFAULT_UNDERLYING_SYMBOL,
+    "underlyingSymbol": DEFAULT_UNDERLYING_SYMBOL,
+    "timeframe": DEFAULT_TIMEFRAME,
+    "timeFrame": DEFAULT_TIMEFRAME,
+    "order_id": DEFAULT_ORDER_ID,
+    "orderId": DEFAULT_ORDER_ID,
+    "quantity": DEFAULT_ORDER_QUANTITY,
+    "side": DEFAULT_ORDER_SIDE,
+    "type": DEFAULT_ORDER_TYPE,
+    "time_in_force": DEFAULT_ORDER_TIME_IN_FORCE,
+    "timeInForce": DEFAULT_ORDER_TIME_IN_FORCE,
+    "secret": DEFAULT_AUTH_SECRET,
+    "token": DEFAULT_SESSION_TOKEN,
+    "limit": DEFAULT_LIMIT_VALUE,
+    "depth": DEFAULT_DEPTH_VALUE,
+}
+
+
+def _annotation_is_str(annotation: Any) -> bool:
+    if annotation is None:
+        return False
+    if annotation is Any:
+        return False
+    origin = get_origin(annotation)
+    if origin is Union:
+        return any(_annotation_is_str(arg) for arg in get_args(annotation))
+    if isinstance(annotation, type) and issubclass(annotation, str):
+        return True
+    return annotation is str
+
+
+def _normalise_params(args_schema: Type[BaseModel], params: Dict[str, Any]) -> Dict[str, Any]:
+    model_fields = getattr(args_schema, "model_fields", {})
+    if "account_id" in model_fields and "account_id" not in params:
+        params["account_id"] = DEFAULT_ACCOUNT_ID
+
+    for name, field in model_fields.items():
+        if name not in params:
+            default_value = DEFAULT_FIELD_VALUES.get(name)
+            if default_value is not None:
+                params[name] = default_value
+
+        if name in params and params[name] is not None:
+            annotation = getattr(field, "annotation", None)
+            if _annotation_is_str(annotation):
+                params[name] = str(params[name])
+
+    return params
 
 SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "mcp" / "server.py"
 PYTHON_EXECUTABLE = sys.executable or "python"
 
 
 class AgentDomain(Enum):
-    """Supported functional domains for specialised agents."""
+    """Домены специализированных агентов."""
 
-    AUTH = "auth"
     ACCOUNTS = "accounts"
     INSTRUMENTS = "instruments"
     ORDERS = "orders"
     MARKET_DATA = "market_data"
+    AUTH = "auth"
 
 
 TOOL_DOMAINS: Dict[str, AgentDomain] = {
-    "get_jwt_token": AgentDomain.AUTH,
-    "get_token_details": AgentDomain.AUTH,
-    "list_accounts_via_token_details": AgentDomain.ACCOUNTS,
-    "get_account": AgentDomain.ACCOUNTS,
-    "get_account_trades": AgentDomain.ACCOUNTS,
-    "get_account_transactions": AgentDomain.ACCOUNTS,
-    "get_assets": AgentDomain.INSTRUMENTS,
-    "get_asset": AgentDomain.INSTRUMENTS,
-    "get_asset_params": AgentDomain.INSTRUMENTS,
-    "get_options_chain": AgentDomain.INSTRUMENTS,
-    "get_asset_schedule": AgentDomain.INSTRUMENTS,
-    "get_clock": AgentDomain.INSTRUMENTS,
-    "get_exchanges": AgentDomain.INSTRUMENTS,
-    "place_order": AgentDomain.ORDERS,
-    "cancel_order": AgentDomain.ORDERS,
-    "get_account_orders": AgentDomain.ORDERS,
-    "get_order": AgentDomain.ORDERS,
-    "get_last_quote": AgentDomain.MARKET_DATA,
-    "get_orderbook": AgentDomain.MARKET_DATA,
-    "get_latest_trades": AgentDomain.MARKET_DATA,
-    "get_bars": AgentDomain.MARKET_DATA,
+    # Auth domain
+    "Auth": AgentDomain.AUTH,
+    "TokenDetails": AgentDomain.AUTH,
+
+    # Accounts domain
+    "GetAccount": AgentDomain.ACCOUNTS,
+    "Trades": AgentDomain.ACCOUNTS,
+    "Transactions": AgentDomain.ACCOUNTS,
+
+    # Instruments domain
+    "GetAssets": AgentDomain.INSTRUMENTS,
+    "GetAsset": AgentDomain.INSTRUMENTS,
+    "GetAssetParams": AgentDomain.INSTRUMENTS,
+    "OptionsChain": AgentDomain.INSTRUMENTS,
+    "Schedule": AgentDomain.INSTRUMENTS,
+    "Clock": AgentDomain.INSTRUMENTS,
+    "Exchanges": AgentDomain.INSTRUMENTS,
+
+    # Orders domain
+    "PlaceOrder": AgentDomain.ORDERS,
+    "GetOrders": AgentDomain.ORDERS,
+    "GetOrder": AgentDomain.ORDERS,
+    "CancelOrder": AgentDomain.ORDERS,
+
+    # Market Data domain
+    "Bars": AgentDomain.MARKET_DATA,
+    "LastQuote": AgentDomain.MARKET_DATA,
+    "LatestTrades": AgentDomain.MARKET_DATA,
+    "OrderBook": AgentDomain.MARKET_DATA,
 }
 
 
-DOMAIN_DESCRIPTIONS: Dict[AgentDomain, str] = {
+DOMAIN_DESCRIPTIONS = {
     AgentDomain.AUTH: "аутентификации и управления токенами",
     AgentDomain.ACCOUNTS: "работы со счетами, портфелями и балансами",
     AgentDomain.INSTRUMENTS: "поиска и анализа торговых инструментов",
@@ -86,59 +179,50 @@ DOMAIN_DESCRIPTIONS: Dict[AgentDomain, str] = {
 
 
 class SpecializedAgent:
-    """Wraps a LangChain agent configured for a specific functional domain."""
+    """Специализированный агент для конкретного домена."""
 
-    def __init__(self, domain: AgentDomain, tools: List[BaseTool], llm: ChatOpenAI):
+    def __init__(self, domain: AgentDomain, tools: List[StructuredTool], llm: ChatOpenAI):
         self.domain = domain
         self.tools = tools
         self.llm = llm
         self.memory = ConversationBufferWindowMemory(
             memory_key="chat_history",
             return_messages=True,
+            output_key="output",
             k=3,
         )
         self.agent = self._create_agent()
 
     def _create_agent(self) -> AgentExecutor:
-        """Create an agent with a domain-specific system prompt."""
-
-        tool_descriptions = "\n".join(f"{tool.name}: {tool.description}" for tool in self.tools)
         tool_names = ", ".join(tool.name for tool in self.tools)
-        system_prompt = self._build_domain_prompt(tool_descriptions, tool_names)
+        tools_desc = "\n".join(f"{tool.name}: {tool.description}" for tool in self.tools)
+        system_prompt = self._build_domain_prompt(tools_desc, tool_names)
 
         agent = initialize_agent(
             tools=self.tools,
             llm=self.llm,
-            agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
             memory=self.memory,
+            agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
             handle_parsing_errors=True,
             verbose=True,
             max_iterations=5,
             agent_kwargs={
-                "system_prompt": system_prompt,
-                "extra_prompt_messages": [MessagesPlaceholder(variable_name="chat_history")],
+                "memory_prompts": ["chat_history"],
+                "input_variables": ["input", "agent_scratchpad", "chat_history"],
             },
         )
 
-        # Ensure chat_history placeholder always resolves, even when empty.
-        if hasattr(agent, "memory") and agent.memory:
-            agent.memory.chat_memory.messages = agent.memory.chat_memory.messages or []
-        if hasattr(agent, "agent") and hasattr(agent.agent, "llm_chain"):
-            prompt_obj = getattr(agent.agent.llm_chain, "prompt", None)
-            if prompt_obj is not None and hasattr(prompt_obj, "partial"):
-                agent.agent.llm_chain.prompt = prompt_obj.partial(chat_history="")
-
-        # Some LangChain versions ignore system_prompt; patch template directly if present.
-        try:
-            prompt = agent.agent.llm_chain.prompt  # type: ignore[attr-defined]
-            if hasattr(prompt, "messages") and prompt.messages:
-                first_message = prompt.messages[0]
-                if hasattr(first_message, "prompt") and hasattr(first_message.prompt, "template"):
-                    first_message.prompt.template = system_prompt
-                elif hasattr(first_message, "content"):
-                    first_message.content = system_prompt
-        except Exception:  # pragma: no cover - defensive fallback
-            pass
+        # Подменяем системный промпт на доменно-специализированный.
+        prompt = getattr(agent.agent.llm_chain, "prompt", None)
+        if prompt is not None and getattr(prompt, "messages", None):
+            first_message = prompt.messages[0]
+            if hasattr(first_message, "prompt") and hasattr(first_message.prompt, "template"):
+                first_message.prompt.template = system_prompt
+            elif hasattr(first_message, "content"):
+                first_message.content = system_prompt
+            input_variables = getattr(prompt, "input_variables", None)
+            if isinstance(input_variables, list) and "chat_history" not in input_variables:
+                input_variables.append("chat_history")
 
         parser = getattr(agent.agent, "output_parser", None)
         if parser is not None and not isinstance(parser, MCPOutputParser):
@@ -147,54 +231,84 @@ class SpecializedAgent:
         return agent
 
     def _build_domain_prompt(self, tools_desc: str, tool_names: str) -> str:
-        """Построение промпта для специализированного агента"""
-        return f"""Ты специализированный агент для {DOMAIN_DESCRIPTIONS[self.domain]}.
+        return dedent(
+            f"""
+            Ты специализированный агент для {DOMAIN_DESCRIPTIONS[self.domain]}.
 
-Доступные инструменты:
-{tools_desc}
+            Доступные инструменты:
+            {tools_desc}
 
-Используй JSON для вызова инструментов:
-```json
-{{{{
-"action": $TOOL_NAME,
-"action_input": $JSON_BLOB ("parametr_name": "value")
-}}}}
-```
+            Роснефть - ROSN@MISX
+            Газпром - GAZP@MISX
+            Газпром Нефть - SIBN@MISX
+            Лукойл - LKOH@MISX
+            Татнефть - TATN@MISX
+            АЛРОСА - ALRS@MISX
+            Сургутнефтегаз - SNGS@MISX
+            РУСАЛ - RUAL@MISX
+            Amazon - AMZN@XNGS
+            ВТБ - VTBR@MISX
+            Сбер / Сбербанк - SBERP@MISX, SBER@MISX
+            Microsoft - MSFT@XNGS
+            Аэрофлот - AFLT@MISX
+            Магнит - MGNT@MISX
+            Норникель - GMKN@MISX, GKZ5@RTSX (фьючерсы)
+            Северсталь - CHZ5@RTSX (фьючерсы), CHMF@MISX
+            ФосАгро - PHOR@MISX
+            Юнипро - UPRO@MISX
+            Распадская - RASP@MISX
+            Полюс - PLZL@MISX
+            X5 Retail Group
+            ПИК - PIKK@MISX
+            МТС - MTSS@MISX
+            Новатэк - NVTK@MISX
 
-Если инструмент не требует параметров, используй пустую строку в action_input.
+            Используй JSON для вызова инструментов:
+            ```
+            {{{{
+            "action": $TOOL_NAME,
+            "action_input": $JSON_BLOB ("arg_name": "value")
+            }}}}
+            ```
 
-Valid "action" values: "Final Answer" or one of [{tool_names}]
+            Valid "action" values: "Final Answer" или один из [{tool_names}]
 
-Формат работы:
+            Формат работы:
 
-Question: входной вопрос
-Thought: анализ ситуации
-Action:
-$JSON_BLOB
+            Question: входной вопрос
+            Thought: анализ ситуации
+            Action:
+            $JSON_BLOB
 
-Observation: результат действия
+            Observation: результат действия
 
-Action:
-```json
-{{{{
-"action": "Final Answer",
-"action_input": "Финальный ответ пользователю"
-}}}}
-```
+            Action:
+            ```
+            {{{{
+            "action": "Final Answer",
+            "action_input": "Финальный ответ пользователю"
+            }}}}
+            ```
 
-История диалога:
-{{chat_history}}
+            История диалога:
+            {{chat_history}}
 
-ВАЖНО:
-- Отвечай ТОЛЬКО на вопросы в твоей области ({DOMAIN_DESCRIPTIONS[self.domain]})
-- Всегда используй инструменты для получения актуальных данных
-- Отвечай на русском языке
-- Форматируй ответы понятно и структурированно
-- Если данных недостаточно, уточни у пользователя
-- В случае получения любой ошибки выдавай Final Answer и сообщай пользователю об ошибке. ни за что не пробуй снова.
+            ВАЖНО:
+            - Отвечай ТОЛЬКО на вопросы в твоей области ({DOMAIN_DESCRIPTIONS[self.domain]})
+            - Всегда используй инструменты для получения актуальных данных
+            - ВСЕГДА ОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ
+            - Форматируй ответы понятно и структурированно
+            - Если данных недостаточно, не переспрашивай пользователя: используй значения по умолчанию
+              (symbol: {DEFAULT_SYMBOL}, timeframe: {DEFAULT_TIMEFRAME}, order_id: {DEFAULT_ORDER_ID},
+              quantity: {DEFAULT_ORDER_QUANTITY}, side: {DEFAULT_ORDER_SIDE}, type: {DEFAULT_ORDER_TYPE},
+              time_in_force: {DEFAULT_ORDER_TIME_IN_FORCE}) и сразу выполняй вызов подходящего инструмента
+            - В случае любой ошибки сразу выдай Final Answer и сообщи пользователю об ошибке. Ни за что не повторяй один и тот же запрос повторно.
+            - Если не указан ID аккаунта, используй значение по умолчанию: {DEFAULT_ACCOUNT_ID}
+            - ЕСЛИ ТЕБЕ НЕ ХВАТАЕТ ИНФОРМАЦИИ — используй разумные значения по умолчанию и делай лучший доступный запрос.
 
-Thought:
-"""
+            Thought:
+            """
+        ).strip()
 
     async def execute(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
         task_input = task
@@ -225,7 +339,7 @@ Thought:
 
 
 class OrchestratorAgent:
-    """Routes user requests to the most relevant specialised agent."""
+    """Оркестратор для маршрутизации запросов между агентами."""
 
     DOMAIN_MAP = {
         "AUTH": AgentDomain.AUTH,
@@ -253,27 +367,37 @@ class OrchestratorAgent:
         if not history:
             return "Нет предыдущих сообщений"
 
-        lines: List[str] = []
+        result: List[str] = []
         for message in history[-max_messages:]:
             role = "Пользователь" if getattr(message, "type", "human") == "human" else "Ассистент"
             content = (message.content or "")[:max_length]
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines)
+            result.append(f"{role}: {content}")
+        return "\n".join(result)
 
     async def route_request(self, user_input: str) -> AgentDomain:
-        history_snapshot = self._get_history()
-        routing_prompt = (
-            "Ты агент-маршрутизатор для системы Finam.\n\n"
-            "Доступные агенты: AUTH, ACCOUNTS, INSTRUMENTS, ORDERS, MARKET_DATA.\n"
-            f"История диалога:\n{history_snapshot}\n\n"
-            f"Запрос пользователя: {user_input}\n\n"
-            "Ответь ОДНИМ словом из списка выше."
-        )
+        routing_prompt = dedent(
+            f"""
+            Ты агент-маршрутизатор в системе управления торговым счетом Finam.
+
+            Доступные специализированные агенты:
+            1. AUTH - аутентификация и токены (получение JWT, проверка токенов)
+            2. ACCOUNTS - счета и портфели (баланс, позиции, транзакции, история сделок)
+            3. INSTRUMENTS - торговые инструменты (поиск акций, параметры инструментов, расписание торгов, опционные цепочки)
+            4. ORDERS - заявки (создание, отмена, просмотр активных заявок)
+            5. MARKET_DATA - рыночные данные (котировки, свечи, стакан, последние сделки)
+
+            История диалога:
+            {self._get_history()}
+
+            Запрос пользователя: {user_input}
+
+            Ответь ТОЛЬКО одним словом из списка: AUTH, ACCOUNTS, INSTRUMENTS, ORDERS, MARKET_DATA.
+            """
+        ).strip()
 
         response = await self.llm.ainvoke(routing_prompt)
         content = getattr(response, "content", "")
-        domain_key = str(content).strip().upper()
-        domain = self.DOMAIN_MAP.get(domain_key, AgentDomain.ACCOUNTS)
+        domain = self.DOMAIN_MAP.get(str(content).strip().upper(), AgentDomain.ACCOUNTS)
         print(f"\n🎯 Оркестратор направил запрос агенту: {domain.value}")
         return domain
 
@@ -298,82 +422,333 @@ class OrchestratorAgent:
             return error_msg
 
 
-class MCPAsyncTool(BaseTool):
-    """LangChain tool wrapper around an MCP server method."""
+_JSON_TO_PY: Dict[str, Type[Any]] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "object": dict,
+    "array": list,
+    "null": type(None),
+}
 
-    args_schema: ClassVar[Optional[Any]] = None
-    _session: ClientSession = PrivateAttr()
 
-    def __init__(self, session: ClientSession, tool_name: str, description: Optional[str] = None):
-        super().__init__(name=tool_name, description=description or "MCP tool")
-        self._session = session
+_NUMERIC_HINT_KEYWORDS = {
+    "qty",
+    "quantity",
+    "amount",
+    "price",
+    "limit",
+    "notional",
+    "volume",
+    "size",
+    "value",
+}
 
-    def _run(self, *args: Any, **kwargs: Any) -> str:  # pragma: no cover - sync mode unused
-        raise NotImplementedError("Используйте асинхронный режим для MCP инструментов")
 
-    @staticmethod
-    def _normalize_params(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        params: Dict[str, Any] = {}
+def _looks_numeric(field_name: str, schema_fragment: Dict[str, Any]) -> bool:
+    """Heuristically determine whether a schema field likely accepts numeric values."""
+    lower_name = field_name.lower()
+    if any(keyword in lower_name for keyword in _NUMERIC_HINT_KEYWORDS):
+        return True
+    description = (schema_fragment.get("description") or "").lower()
+    if any(keyword in description for keyword in _NUMERIC_HINT_KEYWORDS):
+        return True
+    return False
 
-        for arg in args:
-            if isinstance(arg, dict):
-                params.update(arg)
-            elif arg is not None:
-                params.setdefault("input", arg)
 
-        params.update(kwargs)
+def _stringify_decimal(value: Any) -> Any:
+    """Convert decimal-ish values to canonical string representation."""
 
-        for key in ("tool_input", "input", "args"):
-            if key not in params:
-                continue
-            value = params[key]
-            if isinstance(value, dict):
-                params.pop(key)
-                params.update(value)
-            elif isinstance(value, str):
-                try:
-                    parsed = json.loads(value)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(parsed, dict):
-                    params.pop(key)
-                    params.update(parsed)
+    if value is None:
+        return None
+    if isinstance(value, bool):  # bool is a subclass of int, keep original form
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return format(Decimal(str(value)), "f")
+        except (InvalidOperation, ValueError):
+            return str(value)
+    return value
 
-        return params
 
-    @staticmethod
-    def _format_tool_result(result: CallToolResult) -> str:
-        chunks: List[str] = []
-        if result.structuredContent:
-            chunks.append(json.dumps(result.structuredContent, ensure_ascii=False))
+def _make_numeric_stringifier(field_name: str):
+    @field_validator(field_name, mode="before")
+    def _validator(cls, v: Any) -> Any:  # type: ignore[override]
+        return _stringify_decimal(v)
 
-        for item in result.content:
-            if isinstance(item, TextContent):
-                chunks.append(item.text)
-            else:
-                chunks.append(item.model_dump_json())
+    return _validator
 
-        return "\n".join(chunk for chunk in chunks if chunk).strip()
 
-    async def _arun(self, *args: Any, **kwargs: Any) -> str:
-        kwargs.pop("config", None)
-        kwargs.pop("run_manager", None)
+def jsonschema_to_args_schema(name: str, schema: Optional[Dict[str, Any]]) -> Type[BaseModel]:
+    schema = schema or {}
+    properties = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+    fields: Dict[str, tuple[type[Any], Field[Any]]] = {}
+    validators: Dict[str, classmethod] = {}
 
-        params = self._normalize_params(args, kwargs)
-        print(f"🔧 Tool call: {self.name}, params: {params}")
+    def _collect_types(payload: Dict[str, Any]) -> tuple[List[Type[Any]], bool]:
+        types: List[Type[Any]] = []
+        allows_null = False
+
+        def _push(type_name: Optional[str]) -> None:
+            nonlocal allows_null
+            if not type_name:
+                return
+            py_type = _JSON_TO_PY.get(type_name, str)
+            if py_type is type(None):
+                allows_null = True
+                return
+            if py_type not in types:
+                types.append(py_type)
+
+        def _walk(schema_fragment: Any) -> None:
+            if not isinstance(schema_fragment, dict):
+                return
+
+            schema_type = schema_fragment.get("type")
+            if isinstance(schema_type, list):
+                for entry in schema_type:
+                    _push(str(entry) if entry is not None else None)
+            elif isinstance(schema_type, str):
+                _push(schema_type)
+
+            for keyword in ("anyOf", "oneOf", "allOf"):
+                for option in schema_fragment.get(keyword, []) or []:
+                    _walk(option)
+
+            if "enum" in schema_fragment and isinstance(schema_fragment["enum"], list):
+                for enum_value in schema_fragment["enum"]:
+                    if enum_value is None:
+                        allows_null = True
+                        continue
+                    py_type = type(enum_value)
+                    if py_type not in types:
+                        types.append(py_type)
+
+        _walk(payload)
+        return types, allows_null
+
+    def _build_type(type_candidates: List[Type[Any]], allow_null: bool) -> Type[Any]:
+        cleaned: List[Type[Any]] = []
+        for candidate in type_candidates:
+            if candidate not in cleaned:
+                cleaned.append(candidate)
+        if not cleaned:
+            cleaned = [str]
+        if len(cleaned) == 1:
+            result_type: Type[Any] = cleaned[0]
+        else:
+            result_type = Union[tuple(cleaned)]  # type: ignore[assignment]
+        if allow_null:
+            if result_type is type(None):
+                return result_type
+            null_union = list(cleaned)
+            if type(None) not in null_union:
+                null_union.append(type(None))
+            if len(null_union) == 1:
+                return null_union[0]
+            return Union[tuple(null_union)]  # type: ignore[return-value]
+        return result_type
+
+    for key, prop in properties.items():
+        fragment = prop if isinstance(prop, dict) else {}
+        type_candidates, allow_null = _collect_types(fragment)
+        py_type = _build_type(type_candidates, allow_null)
+
+        numeric_hint = _looks_numeric(key, fragment)
+
+        if py_type is str and numeric_hint:
+            numeric_type: Type[Any] = Union[str, int, float]
+            if allow_null:
+                numeric_type = Union[numeric_type, type(None)]  # type: ignore[assignment,valid-type]
+                allow_null = False
+            py_type = numeric_type
+
+        if numeric_hint and _annotation_is_str(py_type):
+            validators[f"_{key}_numeric_stringifier"] = _make_numeric_stringifier(key)
+
+        default = ... if key in required else None
+        fields[key] = (py_type, Field(default, description=fragment.get("description")))
+
+    if not fields:
+        return create_model(name)  # type: ignore[return-value]
+
+    return create_model(name, __validators__=validators, **fields)  # type: ignore[return-value]
+
+
+def _mcp_response_to_text(response: Any) -> str:
+    try:
+        for content in getattr(response, "content", []) or []:
+            if getattr(content, "type", None) == "text" and getattr(content, "text", None):
+                return content.text
+    except Exception:  # pragma: no cover - best effort fallback
+        pass
+    return str(response)
+
+
+def _structured_call_factory(
+    session: ClientSession, tool_name: str, args_schema: Type[BaseModel]
+):
+    async def _call(**kwargs: Any) -> str:
+        params = _normalise_params(args_schema, dict(kwargs))
 
         try:
-            call_logger.log_tool_call(self.name, params)
-        except Exception as log_error:  # pragma: no cover - logging is best-effort
-            print(f"⚠️  Не удалось записать вызов инструмента {self.name}: {log_error}")
+            call_logger.log_tool_call(tool_name, params)
+        except Exception as log_exc:  # pragma: no cover - logging best effort
+            print(f"⚠️  Не удалось записать вызов инструмента {tool_name}: {log_exc}")
 
-        response = await self._session.call_tool(self.name, params)
+        response = await session.call_tool(tool_name, params)
+        if getattr(response, "isError", False):
+            details = _mcp_response_to_text(response)
+            return f"Ошибка при вызове {tool_name}: {details}"
+        return _mcp_response_to_text(response)
 
-        if response.isError:
-            details = self._format_tool_result(response)
-            return f"Ошибка при вызове {self.name}: {details}"
+    return _call
 
-        return self._format_tool_result(response)
+
+async def create_tools_from_mcp(session: ClientSession) -> List[StructuredTool]:
+    tools: List[StructuredTool] = []
+    cursor: Optional[str] = None
+
+    while True:
+        listing = await session.list_tools(cursor=cursor)
+        for tool in listing.tools:
+            schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
+            args_schema = jsonschema_to_args_schema(f"{tool.name}Args", schema)
+            coroutine = _structured_call_factory(session, tool.name, args_schema)
+            tools.append(
+                StructuredTool(
+                    name=tool.name,
+                    description=tool.description or tool.title or "MCP tool",
+                    args_schema=args_schema,
+                    coroutine=coroutine,
+                )
+            )
+            print(f"✅ Зарегистрирован StructuredTool: {tool.name}")
+
+        cursor = getattr(listing, "nextCursor", None)
+        if not cursor:
+            break
+
+    return tools
+
+
+def group_tools_by_domain(tools: Iterable[StructuredTool]) -> Dict[AgentDomain, List[StructuredTool]]:
+    grouped: Dict[AgentDomain, List[StructuredTool]] = {domain: [] for domain in AgentDomain}
+    for tool in tools:
+        domain = TOOL_DOMAINS.get(tool.name, AgentDomain.ACCOUNTS)
+        grouped.setdefault(domain, []).append(tool)
+    return grouped
+
+
+async def run_test_queries(orchestrator: OrchestratorAgent, queries: Iterable[str]) -> None:
+    for idx, query in enumerate(queries, start=1):
+        print("\n" + "=" * 70)
+        print(f"📝 Запрос {idx}: {query}")
+        print("=" * 70)
+        result = await orchestrator.process_request(query)
+        print(f"\n💬 Ответ: {result}\n" + "-" * 70)
+        await asyncio.sleep(0.5)
+
+
+async def run_interactive_mode(orchestrator: OrchestratorAgent) -> None:
+    print("\n" + "=" * 70)
+    print("🎮 Интерактивный режим (введите 'exit' для выхода)")
+    print("=" * 70)
+
+    loop = asyncio.get_running_loop()
+
+    while True:
+        try:
+            user_input = await loop.run_in_executor(None, input, "\n👤 Вы: ")
+        except KeyboardInterrupt:
+            print("\n👋 До свидания!")
+            return
+
+        if user_input.strip().lower() in {"exit", "quit", "выход"}:
+            print("👋 До свидания!")
+            return
+
+        if not user_input.strip():
+            continue
+
+        response = await orchestrator.process_request(user_input)
+        print(f"\n🤖 Ассистент: {response}")
+
+
+def build_llm() -> ChatOpenAI:
+    missing: List[str] = []
+    if not OPENROUTER_API_KEY:
+        missing.append("OPENROUTER_API_KEY/COMET_API_KEY")
+    if not OPENROUTER_BASE_URL:
+        missing.append("OPENROUTER_BASE/COMET_BASE_URL")
+    if not OPENROUTER_MODEL_ID:
+        missing.append("OPENROUTER_MODEL/COMET_MODEL_ID")
+
+    if missing:
+        raise RuntimeError(
+            "Не установлены переменные окружения: " + ", ".join(missing)
+        )
+
+    return ChatOpenAI(
+        model=OPENROUTER_MODEL_ID,
+        base_url=OPENROUTER_BASE_URL,
+        api_key=OPENROUTER_API_KEY,
+        temperature=0,
+    )
+
+
+async def main(
+    interactive: bool | None = None,
+    test_queries: Optional[List[str]] = None,
+) -> None:
+    if not SERVER_SCRIPT.exists():
+        raise FileNotFoundError(f"Не найден MCP сервер по пути {SERVER_SCRIPT}")
+
+    llm = build_llm()
+
+    server_params = StdioServerParameters(
+        command=PYTHON_EXECUTABLE,
+        args=[str(SERVER_SCRIPT)],
+        env=os.environ.copy(),
+    )
+
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            tools = await create_tools_from_mcp(session)
+            if not tools:
+                print("❌ Не удалось загрузить инструменты MCP")
+                return
+
+            tools_by_domain = group_tools_by_domain(tools)
+            orchestrator = OrchestratorAgent(llm)
+
+            for domain, domain_tools in tools_by_domain.items():
+                if not domain_tools:
+                    continue
+                agent = SpecializedAgent(domain, domain_tools, llm)
+                orchestrator.add_agent(agent)
+                print(f"✅ Создан агент '{domain.value}' с {len(domain_tools)} инструментами")
+
+            if test_queries:
+                await run_test_queries(orchestrator, test_queries)
+
+            if interactive is None and test_queries is None:
+                answer = input("\n🎮 Запустить интерактивный режим? (y/n): ").strip().lower()
+                interactive = answer == "y"
+
+            if interactive or (interactive is None and not test_queries):
+                await run_interactive_mode(orchestrator)
+
+
+def main_cli() -> None:
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 До свидания!")
 
 
 class MCPOutputParser:
@@ -453,7 +828,6 @@ class MCPOutputParser:
             def _replacer(match: _re.Match[str]) -> str:
                 prefix = match.group(1)
                 value = match.group(2)
-                # Preserve already quoted values
                 if value.startswith(('"', "'", "{", "[")):
                     return prefix + value
                 return prefix + f'"{value.strip()}"'
@@ -595,131 +969,6 @@ class MCPOutputParser:
             return match.group(0)
 
         return pattern.sub(_repair_single_match, text)
-
-
-async def create_tools_from_mcp(session: ClientSession) -> List[BaseTool]:
-    tools: List[BaseTool] = []
-    cursor: Optional[str] = None
-
-    try:
-        while True:
-            listing = await session.list_tools(cursor=cursor)
-            for tool in listing.tools:
-                description = tool.description or tool.title or "MCP tool"
-                tools.append(MCPAsyncTool(session, tool.name, description))
-
-            cursor = listing.nextCursor
-            if not cursor:
-                break
-    except Exception as exc:
-        print(f"❌ Ошибка при получении инструментов MCP: {exc}")
-        return []
-
-    return tools
-
-
-def group_tools_by_domain(tools: Iterable[BaseTool]) -> Dict[AgentDomain, List[BaseTool]]:
-    grouped: Dict[AgentDomain, List[BaseTool]] = {domain: [] for domain in AgentDomain}
-    for tool in tools:
-        domain = TOOL_DOMAINS.get(tool.name, AgentDomain.ACCOUNTS)
-        grouped.setdefault(domain, []).append(tool)
-    return grouped
-
-
-async def run_test_queries(orchestrator: OrchestratorAgent, queries: Iterable[str]) -> None:
-    for idx, query in enumerate(queries, start=1):
-        print("\n" + "=" * 70)
-        print(f"📝 Запрос {idx}: {query}")
-        print("=" * 70)
-        result = await orchestrator.process_request(query)
-        print(f"\n💬 Ответ: {result}\n" + "-" * 70)
-        await asyncio.sleep(0.5)
-
-
-async def run_interactive_mode(orchestrator: OrchestratorAgent) -> None:
-    print("\n" + "=" * 70)
-    print("🎮 Интерактивный режим (введите 'exit' для выхода)")
-    print("=" * 70)
-
-    loop = asyncio.get_running_loop()
-
-    while True:
-        try:
-            user_input = await loop.run_in_executor(None, input, "\n👤 Вы: ")
-        except KeyboardInterrupt:
-            print("\n👋 До свидания!")
-            return
-
-        if user_input.strip().lower() in {"exit", "quit", "выход"}:
-            print("👋 До свидания!")
-            return
-
-        if not user_input.strip():
-            continue
-
-        response = await orchestrator.process_request(user_input)
-        print(f"\n🤖 Ассистент: {response}")
-
-
-def build_llm() -> ChatOpenAI:
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY не установлен в окружении")
-
-    return ChatOpenAI(
-        model=OPENROUTER_MODEL_ID,
-        base_url=OPENROUTER_BASE_URL,
-        api_key=OPENROUTER_API_KEY,
-        temperature=0,
-    )
-
-
-async def main(interactive: bool | None = None, test_queries: Optional[List[str]] = None) -> None:
-    if not SERVER_SCRIPT.exists():
-        raise FileNotFoundError(f"Не найден MCP сервер по пути {SERVER_SCRIPT}")
-
-    llm = build_llm()
-
-    server_params = StdioServerParameters(
-        command=PYTHON_EXECUTABLE,
-        args=[str(SERVER_SCRIPT)],
-        env=os.environ.copy(),
-    )
-
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-
-            tools = await create_tools_from_mcp(session)
-            if not tools:
-                print("❌ Не удалось загрузить инструменты MCP")
-                return
-
-            tools_by_domain = group_tools_by_domain(tools)
-            orchestrator = OrchestratorAgent(llm)
-
-            for domain, domain_tools in tools_by_domain.items():
-                if not domain_tools:
-                    continue
-                agent = SpecializedAgent(domain, domain_tools, llm)
-                orchestrator.add_agent(agent)
-                print(f"✅ Создан агент '{domain.value}' с {len(domain_tools)} инструментами")
-
-            if interactive is None and test_queries is None:
-                answer = input("\n🎮 Запустить интерактивный режим? (y/n): ").strip().lower()
-                interactive = answer == "y"
-
-            if test_queries:
-                await run_test_queries(orchestrator, test_queries)
-
-            if interactive or (interactive is None and test_queries is None):
-                await run_interactive_mode(orchestrator)
-
-
-def main_cli() -> None:
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 До свидания!")
 
 
 if __name__ == "__main__":
