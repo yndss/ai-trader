@@ -1,763 +1,716 @@
 from __future__ import annotations
 
-"""Finam TradeAPI MCP server (REST)."""
+"""FastMCP server exposing Finam TradeAPI endpoints as tools."""
 
 import os
-import sys
-from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, TypeVar, Union
+from typing import Any, Dict, List, Optional
 
-import httpx
-from pydantic import BaseModel, Field, field_validator
-
-try:
-    from mcp.server.fastmcp import FastMCP
-except ModuleNotFoundError as exc:
-    raise RuntimeError("The 'mcp' package is required. Install it via 'pip install mcp'") from exc
+from mcp.server.fastmcp import FastMCP
 
 try:
-    from .models import Leg, Order, OrderType, Side, StopCondition, TimeInForce, ValidBefore
-except ImportError:  # pragma: no cover - support running as a script
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from app.mcp.models import Leg, Order, OrderType, Side, StopCondition, TimeInForce, ValidBefore
+    from finam_client import FinamAPIClient
+except ImportError:  # pragma: no cover - fallback if namespace import fails
+    from finam_client.client import FinamAPIClient  # type: ignore
 
-FINAM_BASE_URL = os.getenv("FINAM_API_BASE_URL", "https://api.finam.ru")
-DEFAULT_TIMEOUT = float(os.getenv("FINAM_HTTP_TIMEOUT", "20"))
-DEFAULT_DEPTH = 10
-ENV_SECRET = os.getenv("FINAM_ACCESS_TOKEN")
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency
+    load_dotenv = None
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_PATH = PROJECT_ROOT / ".env"
 
-def _norm_symbol(symbol: str) -> str:
-    normalized = (symbol or "").strip().upper()
-    if "@" not in normalized:
-        raise ValueError("symbol must be provided in format TICKER@MIC, e.g. SBER@MISX")
-    return normalized
+if load_dotenv is not None:
+    if ENV_PATH.exists():
+        load_dotenv(ENV_PATH)
+    else:
+        load_dotenv()
 
 
-def _as_decimal(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (int, float, Decimal)):
-        return str(value)
-    raise ValueError("numeric values must be int|float|str")
+mcp = FastMCP("FinamTrader")
+api_client = FinamAPIClient()
 
+_DEFAULT_SECRET = os.getenv("FINAM_AUTH_SECRET") or os.getenv("FINAM_ACCESS_TOKEN") or ""
+_CURRENT_TOKEN: Optional[str] = None
 
-EnumT = TypeVar("EnumT", Side, OrderType, TimeInForce, StopCondition, ValidBefore)
 
-
-def _parse_enum(enum_cls: type[EnumT], value: Union[str, EnumT, None]) -> Optional[EnumT]:
-    if value is None or isinstance(value, enum_cls):
-        return value
-
-    raw = str(value).strip()
-    normalised = raw.replace("-", "_").replace(" ", "_").upper()
-
-    try:
-        return enum_cls(normalised)
-    except ValueError:
-        parts = normalised.split("_")
-        for idx in range(len(parts)):
-            candidate = "_".join(parts[idx:])
-            try:
-                return enum_cls(candidate)
-            except ValueError:
-                continue
-        raise ValueError(f"Unknown value '{value}' for enum {enum_cls.__name__}")
-
-
-class GetBarsParams(BaseModel):
-    symbol: str
-    timeframe: str
-    start_time: Optional[int] = Field(None, description="Unix seconds")
-    end_time: Optional[int] = Field(None, description="Unix seconds")
-    limit: Optional[int] = None
-
-    @field_validator("symbol")
-    @classmethod
-    def _validate_symbol(cls, value: str) -> str:
-        return _norm_symbol(value)
-
-    @field_validator("timeframe")
-    @classmethod
-    def _validate_timeframe(cls, value: str) -> str:
-        return value.upper()
-
-
-class AsyncFinamClient:
-    def __init__(self, base_url: str = FINAM_BASE_URL, timeout: float = DEFAULT_TIMEOUT) -> None:
-        self._base = base_url.rstrip("/")
-        self._jwt: Optional[str] = None
-        self._secret: Optional[str] = ENV_SECRET
-        self._client = httpx.AsyncClient(
-            base_url=self._base,
-            http2=True,
-            timeout=timeout,
-            headers={"Content-Type": "application/json"},
-        )
-
-    async def aclose(self) -> None:
-        await self._client.aclose()
-
-    def set_jwt(self, jwt: Optional[str]) -> None:
-        self._jwt = jwt
-
-    def set_secret(self, secret: Optional[str]) -> None:
-        self._secret = secret
-
-    async def _auto_login(self, force: bool = False) -> bool:
-        if not force and self._jwt:
-            return True
-        if not self._secret:
-            return False
-
-        try:
-            result = await self.exchange_secret_for_jwt(self._secret)
-        except Exception:
-            return False
-
-        token = result.get("jwt") or result.get("token")
-        return bool(token)
-
-    @staticmethod
-    def _extract_payload(response: httpx.Response) -> Any:
-        content_type = response.headers.get("content-type", "")
-        if "application/json" in content_type:
-            try:
-                return response.json()
-            except Exception:
-                return {"raw": response.text}
-        return {"raw": response.text}
-
-    def _mentions_expired_token(self, payload: Any) -> bool:
-        if isinstance(payload, dict):
-            message = str(payload.get("message", "")).lower()
-            if "token is expired" in message or "jwt token check failed" in message:
-                return True
-
-            code = payload.get("code")
-            if isinstance(code, str) and code.upper() == "UNAUTHENTICATED":
-                return True
-            if code == 13 and message:
-                return True
-
-            for value in payload.values():
-                if self._mentions_expired_token(value):
-                    return True
-
-        if isinstance(payload, list):
-            return any(self._mentions_expired_token(item) for item in payload)
-
-        return False
-
-    def _needs_token_refresh(self, response: httpx.Response, payload: Any) -> bool:
-        if response.status_code in (401, 403):
-            return True
-        if response.status_code >= 400 and self._mentions_expired_token(payload):
-            return True
-        return False
-
-    @staticmethod
-    def _ensure_error_payload(payload: Any, status_code: int) -> Dict[str, Any]:
-        if isinstance(payload, dict):
-            payload.setdefault("ok", False)
-            payload.setdefault("status", status_code)
-            return payload
-        return {"ok": False, "status": status_code, "error": payload}
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: Optional[Dict[str, Any]] = None,
-        json: Optional[Dict[str, Any]] = None,
-        attach_auth: bool = True,
-    ) -> Dict[str, Any]:
-        if attach_auth and not self._jwt:
-            await self._auto_login()
-
-        response: Optional[httpx.Response] = None
-        payload: Any = None
-        for attempt in range(2):
-            headers: Dict[str, str] = {}
-            if attach_auth and self._jwt:
-                headers["Authorization"] = self._jwt
-
-            response = await self._client.request(method, path, params=params, json=json, headers=headers)
-            payload = self._extract_payload(response)
-
-            if attach_auth and self._needs_token_refresh(response, payload):
-                refreshed = await self._auto_login(force=True)
-                if refreshed:
-                    continue
-            break
-
-        assert response is not None
-        ok = 200 <= response.status_code < 300
-
-        if not ok:
-            return self._ensure_error_payload(payload, response.status_code)
-
-        return payload if isinstance(payload, dict) else {"data": payload}
-
-    async def exchange_secret_for_jwt(self, secret: Optional[str] = None) -> Dict[str, Any]:
-        secret_to_use = secret or self._secret
-        if not secret_to_use:
-            raise RuntimeError("FINAM_ACCESS_TOKEN environment variable is not set and no secret provided")
-
-        self.set_secret(secret_to_use)
-
-        result = await self._request(
-            "POST",
-            "/v1/sessions",
-            json={"secret": secret_to_use},
-            attach_auth=False,
-        )
-        token = result.get("jwt") or result.get("token")
-        if token:
-            self.set_jwt(token)
-        return result
-
-    async def token_details(self, token: Optional[str] = None) -> Dict[str, Any]:
-        payload = {"token": token or self._jwt}
-        return await self._request("POST", "/v1/sessions/details", json=payload, attach_auth=False)
-
-    async def get_account(self, account_id: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/v1/accounts/{account_id}")
-
-    async def get_account_trades(
-        self,
-        account_id: str,
-        *,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-        limit: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {}
-        if start_time is not None:
-            params["interval.start_time"] = start_time
-            params["interval_start"] = start_time
-        if end_time is not None:
-            params["interval.end_time"] = end_time
-            params["interval_end"] = end_time
-        if limit is not None:
-            params["limit"] = limit
-        return await self._request("GET", f"/v1/accounts/{account_id}/trades", params=params or None)
-
-    async def get_account_transactions(
-        self,
-        account_id: str,
-        *,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-        limit: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        params: Dict[str, Any] = {}
-        if start_time is not None:
-            params["interval.start_time"] = start_time
-            params["interval_start"] = start_time
-        if end_time is not None:
-            params["interval.end_time"] = end_time
-            params["interval_end"] = end_time
-        if limit is not None:
-            params["limit"] = limit
-        return await self._request("GET", f"/v1/accounts/{account_id}/transactions", params=params or None)
-
-    async def get_assets(self) -> Dict[str, Any]:
-        return await self._request("GET", "/v1/assets")
-
-    async def get_asset(self, symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
-        params = {"account_id": account_id} if account_id else None
-        return await self._request("GET", f"/v1/assets/{_norm_symbol(symbol)}", params=params)
-
-    async def get_asset_params(self, symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
-        params = {"account_id": account_id} if account_id else None
-        return await self._request(
-            "GET",
-            f"/v1/assets/{_norm_symbol(symbol)}/params",
-            params=params,
-        )
-
-    async def get_options_chain(self, underlying_symbol: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/v1/assets/{_norm_symbol(underlying_symbol)}/options")
-
-    async def get_asset_schedule(self, symbol: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/v1/assets/{_norm_symbol(symbol)}/schedule")
-
-    async def get_clock(self) -> Dict[str, Any]:
-        return await self._request("GET", "/v1/assets/clock")
-
-    async def get_exchanges(self) -> Dict[str, Any]:
-        return await self._request("GET", "/v1/exchanges")
-
-    async def get_orders(self, account_id: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/v1/accounts/{account_id}/orders")
-
-    async def get_order(self, account_id: str, order_id: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/v1/accounts/{account_id}/orders/{order_id}")
-
-    async def place_order(self, order: Order) -> Dict[str, Any]:
-        payload = order.to_request_payload()
-        return await self._request("POST", f"/v1/accounts/{order.account_id}/orders", json=payload)
-
-    async def cancel_order(self, account_id: str, order_id: str) -> Dict[str, Any]:
-        return await self._request("DELETE", f"/v1/accounts/{account_id}/orders/{order_id}")
-
-    async def last_quote(self, symbol: str) -> Dict[str, Any]:
-        symbol = _norm_symbol(symbol)
-        result = await self._request("GET", "/v1/marketdata/quotes/latest", params={"symbol": symbol})
-        if result.get("ok") is False and result.get("status") == 404:
-            result = await self._request("GET", f"/v1/instruments/{symbol}/quotes/latest")
-        return result
-
-    async def orderbook(self, symbol: str, depth: int = DEFAULT_DEPTH) -> Dict[str, Any]:
-        symbol = _norm_symbol(symbol)
-        params = {"symbol": symbol, "depth": depth}
-        result = await self._request("GET", "/v1/marketdata/orderbook", params=params)
-        if result.get("ok") is False and result.get("status") == 404:
-            result = await self._request("GET", f"/v1/instruments/{symbol}/orderbook", params={"depth": depth})
-        return result
-
-    async def latest_trades(self, symbol: str) -> Dict[str, Any]:
-        symbol = _norm_symbol(symbol)
-        result = await self._request("GET", "/v1/marketdata/trades/latest", params={"symbol": symbol})
-        if result.get("ok") is False and result.get("status") == 404:
-            result = await self._request("GET", f"/v1/instruments/{symbol}/trades/latest")
-        return result
-
-    async def bars(self, params: GetBarsParams) -> Dict[str, Any]:
-        query: Dict[str, Any] = {"symbol": params.symbol, "timeframe": params.timeframe}
-        if params.start_time is not None:
-            query["interval.start_time"] = params.start_time
-            query["interval_start"] = params.start_time
-        if params.end_time is not None:
-            query["interval.end_time"] = params.end_time
-            query["interval_end"] = params.end_time
-        if params.limit is not None:
-            query["limit"] = params.limit
-
-        result = await self._request("GET", "/v1/marketdata/bars", params=query)
-        if result.get("ok") is False and result.get("status") == 404:
-            result = await self._request("GET", f"/v1/instruments/{params.symbol}/bars", params=query)
-        return result
-
-
-app = FastMCP("FinamTrader")
-_client = AsyncFinamClient()
-
-
-async def _auth(secret: Optional[str] = None) -> Dict[str, Any]:
-    result = await _client.exchange_secret_for_jwt(secret)
-
-    if not isinstance(result, dict):
-        return {"ok": True, "token": result, "message": "JWT обновлен"}
-
-    if result.get("ok") is False:
-        return result
-
-    payload = dict(result)
-    token = payload.get("jwt") or payload.get("token")
+def _set_authorization(token: Optional[str]) -> None:
+    global _CURRENT_TOKEN
     if token:
-        payload.setdefault("jwt", token)
-        payload.setdefault("token", token)
+        formatted = token.strip()
+        api_client.session.headers["Authorization"] = formatted
+        _CURRENT_TOKEN = formatted
+    else:
+        api_client.session.headers.pop("Authorization", None)
+        _CURRENT_TOKEN = None
 
-    payload.setdefault("ok", True)
-    payload.setdefault("message", "JWT обновлен")
-    return payload
+
+_initial_auth = api_client.session.headers.get("Authorization")
+if _initial_auth:
+    _set_authorization(_initial_auth)
 
 
-async def _prepare_order(
-    *,
-    account_id: str,
-    symbol: str,
-    quantity: Union[str, int, float],
-    side: Union[str, Side],
-    order_type: Union[str, OrderType],
-    time_in_force: Optional[Union[str, TimeInForce]] = None,
-    limit_price: Optional[Union[str, int, float]] = None,
-    stop_price: Optional[Union[str, int, float]] = None,
-    stop_condition: Optional[Union[str, StopCondition]] = None,
-    valid_before: Optional[Union[str, ValidBefore]] = None,
-    client_order_id: Optional[str] = None,
-    comment: Optional[str] = None,
-    legs: Optional[Iterable[Union[Leg, Dict[str, Any]]]] = None,
-) -> Dict[str, Any]:
-    legs_payload: Optional[list[Leg]] = None
-    if legs is not None:
-        legs_payload = []
-        for leg in legs:
-            if isinstance(leg, Leg):
-                legs_payload.append(leg)
-            else:
-                legs_payload.append(Leg(**leg))
-
-    order = Order(
-        account_id=account_id,
-        symbol=_norm_symbol(symbol),
-        quantity=quantity,
-        side=_parse_enum(Side, side),
-        type=_parse_enum(OrderType, order_type),
-        time_in_force=_parse_enum(TimeInForce, time_in_force),
-        limit_price=_as_decimal(limit_price) if limit_price is not None else None,
-        stop_price=_as_decimal(stop_price) if stop_price is not None else None,
-        stop_condition=_parse_enum(StopCondition, stop_condition),
-        valid_before=_parse_enum(ValidBefore, valid_before),
-        client_order_id=client_order_id,
-        comment=comment,
-        legs=legs_payload,
+def _exchange_secret_for_token(secret: str) -> Dict[str, Any]:
+    global _DEFAULT_SECRET
+    if secret:
+        _DEFAULT_SECRET = secret
+    response = api_client.execute_request(
+        "POST",
+        "/v1/sessions",
+        json={"secret": secret},
     )
-    return await _client.place_order(order)
+
+    token = response.get("token") or response.get("jwt")
+    if token:
+        _set_authorization(token)
+    return response
 
 
-@app.tool()
-async def Auth(secret: Optional[str] = None) -> Dict[str, Any]:
-    """Exchange API secret for a JWT session token.
+async def _ensure_authorized() -> None:
+    current_header = api_client.session.headers.get("Authorization")
+    if current_header:
+        if _DEFAULT_SECRET and current_header.strip() == _DEFAULT_SECRET.strip():
+            pass
+        elif _CURRENT_TOKEN and (_DEFAULT_SECRET == "" or _CURRENT_TOKEN.strip() != _DEFAULT_SECRET.strip()):
+            return
+    if _DEFAULT_SECRET:
+        _exchange_secret_for_token(_DEFAULT_SECRET)
+
+
+@mcp.tool()
+async def Auth(secret: str) -> Dict[str, Any]:
+    """
+    Get JWT token from API token
 
     Args:
-        secret: Optional API token override. Falls back to `FINAM_ACCESS_TOKEN` env var.
+        secret: API token (secret key)
 
     Returns:
-        Dict[str, Any]: JWT exchange result including the issued token.
+        dict: JWT token information with the following structure:
+            - token (str): Received JWT token
     """
-    return await _auth(secret)
+    response = _exchange_secret_for_token(secret)
+    return response
 
 
-@app.tool()
-async def TokenDetails(token: Optional[str] = None) -> Dict[str, Any]:
-    """Fetch metadata for a JWT token issued by Finam TradeAPI.
+@mcp.tool()
+async def TokenDetails(token: str) -> Dict[str, Any]:
+    """
+    Get information about session token
 
     Args:
-        token: JWT token to inspect. Defaults to the current session token.
+        token: JWT token
 
     Returns:
-        Dict[str, Any]: Token details such as expiry, permissions, accounts.
+        dict: Token information with the following structure:
+            - created_at (str): Creation date and time
+            - expires_at (str): Expiration date and time
+            - md_permissions (list[dict]): Market data access information
+                - quote_level (str): Quote level
+                - delay_minutes (float): Delay in minutes
+                - mic (str): Exchange MIC identifier
+                - country (str): Country
+                - continent (str): Continent
+                - worldwide (bool): Worldwide access
+            - account_ids (list[str]): Account identifiers
+            - readonly (bool): Session and trading accounts marked as readonly
     """
-    return await _client.token_details(token)
+    await _ensure_authorized()
+    if token:
+        return api_client.execute_request(
+            "POST",
+            "/v1/sessions/details",
+            json={"token": token},
+        )
+    return api_client.execute_request("GET", "/v1/sessions/details")
 
 
-@app.tool()
+@mcp.tool()
 async def GetAccount(account_id: str) -> Dict[str, Any]:
-    """Retrieve account state including balances and open positions.
+    """
+    Get information about specific account
 
     Args:
-        account_id: Unique Finam account identifier.
+        account_id: Account identifier
 
     Returns:
-        Dict[str, Any]: Account snapshot with cash, portfolio, positions.
+        dict: Account information with the following structure:
+            - account_id (str): Account identifier
+            - type (str): Account type
+            - status (str): Account status
+            - equity (str): Available funds plus value of open positions
+            - unrealized_profit (str): Unrealized profit
+            - positions (list[dict]): Positions (open plus theoretical from active unfilled orders)
+                - symbol (str): Instrument symbol
+                - quantity (str): Quantity in units, signed value determining (long-short)
+                - average_price (str): Average price. Not filled for FORTS positions
+                - current_price (str): Current price
+                - maintenance_margin (str): Maintenance margin. Filled only for FORTS positions
+                - daily_pnl (str): Profit or loss for current day (PnL). Not filled for FORTS positions
+                - unrealized_pnl (str): Total unrealized profit or loss (PnL) of current position
+            - cash (list[dict]): Own cash available for trading. Does not include margin funds
+            - portfolio_mc (dict): General type for Moscow Exchange accounts. Includes both unified and mono accounts
+                - available_cash (str): Own cash available for trading. Includes margin funds
+                - initial_margin (str): Initial margin
+                - maintenance_margin (str): Maintenance margin
+            - portfolio_mct (dict): Portfolio type for US market accounts
+            - portfolio_forts (dict): Portfolio type for trading on Moscow Exchange futures market
+                - available_cash (str): Own cash available for trading. Includes margin funds
+                - money_reserved (str): Minimum margin (required collateral for open positions)
     """
-    return await _client.get_account(account_id)
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/accounts/{account_id}")
 
 
-@app.tool()
+@mcp.tool()
 async def Trades(
     account_id: str,
-    limit: Optional[int] = None,
-    interval_start: Optional[int] = None,
-    interval_end: Optional[int] = None,
+    limit: str = "none",
+    interval_start: str = "none",
+    interval_end: str = "none",
 ) -> Dict[str, Any]:
-    """Get historical trades for the provided account.
+    """
+    Get account trade history
 
     Args:
-        account_id: Account identifier for trade history lookup.
-        limit: Optional number of records to return.
-        interval_start: Optional start of the period (Unix seconds).
-        interval_end: Optional end of the period (Unix seconds).
+        account_id: Account identifier
+        limit: чтобы узнать последние N сделок по счету (may be str or "none")
+        interval_start: Start of requested period, Unix epoch time (may be "none")
+        interval_end: End of requested period, Unix epoch time (may be "none)
 
     Returns:
-        Dict[str, Any]: Trade list payload mirroring API response.
+        dict: Trade history with the following structure:
+            - trades (list[dict]): Account trades (AccountTrade objects)
     """
-    return await _client.get_account_trades(
-        account_id,
-        start_time=interval_start,
-        end_time=interval_end,
-        limit=limit,
+    params: Dict[str, str] = {}
+    if limit != "none":
+        params["limit"] = str(limit)
+    if interval_start != "none":
+        params["interval.start_time"] = str(interval_start)
+    if interval_end != "none":
+        params["interval.end_time"] = str(interval_end)
+
+    await _ensure_authorized()
+    return api_client.execute_request(
+        "GET",
+        f"/v1/accounts/{account_id}/trades",
+        params=params or None,
     )
 
 
-@app.tool()
+@mcp.tool()
 async def Transactions(
     account_id: str,
-    limit: Optional[int] = None,
-    interval_start: Optional[int] = None,
-    interval_end: Optional[int] = None,
+    limit: str = "none",
+    interval_start: str = "none",
+    interval_end: str = "none",
 ) -> Dict[str, Any]:
-    """List money movements and corporate actions for an account.
+    """
+    Get list of account transactions
 
     Args:
-        account_id: Account identifier for transaction history.
-        limit: Optional maximum number of records.
-        interval_start: Optional start of the period (Unix seconds).
-        interval_end: Optional end of the period (Unix seconds).
+        account_id: Account identifier
+        limit: чтобы узнать последние N транзакций по счету (may be str or "none")
+        interval_start: Start of requested period, Unix epoch time (may be "none")
+        interval_end: End of requested period, Unix epoch time (may be "none)
 
     Returns:
-        Dict[str, Any]: Transaction collection with timestamps and amounts.
+        dict: Transactions with the following structure:
+            - transactions (list[dict]): Account transactions
+                - id (str): Transaction identifier
+                - category (str): Transaction type from TransactionCategory
+                - timestamp (str): Timestamp
+                - symbol (str): Instrument symbol
+                - change (dict): Money change (google.type.Money)
+                - trade (dict): Trade information
+                - transaction_category (str): Transaction category from TransactionCategory
+                - transaction_name (str): Transaction name
     """
-    return await _client.get_account_transactions(
-        account_id,
-        start_time=interval_start,
-        end_time=interval_end,
-        limit=limit,
+    params: Dict[str, str] = {}
+    if limit != "none":
+        params["limit"] = str(limit)
+    if interval_start != "none":
+        params["interval.start_time"] = str(interval_start)
+    if interval_end != "none":
+        params["interval.end_time"] = str(interval_end)
+
+    await _ensure_authorized()
+    return api_client.execute_request(
+        "GET",
+        f"/v1/accounts/{account_id}/transactions",
+        params=params or None,
     )
 
 
-@app.tool()
-async def GetAssets() -> Dict[str, Any]:
-    """Return the directory of instruments available via Finam TradeAPI.
-
-    Returns:
-        Dict[str, Any]: Assets listing with symbols, tickers, and metadata.
+@mcp.tool()
+async def Clock_ACCOUNTS(account_id: str) -> Dict[str, Any]:
     """
-    return await _client.get_assets()
-
-
-@app.tool()
-async def GetAsset(symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
-    """Fetch detailed information about a single instrument.
+    Get server time (ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ТУЛ Clock_ACCOUNTS ЕСЛИ ТРЕБУЕТСЯ УЗНАТЬ ТРАНЗАКЦИИ ИЛИ СДЕЛКИ ВО ВРЕМЕННОМ ПРОМЕЖУТКЕ, КВАРТАЛЕ И ТД)
+    ДЛЯ КВАРТАЛА И ВРЕМЕННОГО ПРОМЕЖТУКА ДЛЯ НАЧАЛА УЗНАЙ ТЕКУЩЕЕ ВРЕМЯ interval_end С ПОМОЩЬЮ ИНСТРУМЕНТА Clock_ACCOUNTS
 
     Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
-        account_id: Optional account context to tailor attributes.
+        account_id: Account identifier
 
     Returns:
-        Dict[str, Any]: Instrument description including board, lots, ISIN.
+        dict: Server time with the following structure:
+            - timestamp (str): Timestamp
     """
-    return await _client.get_asset(symbol, account_id=account_id)
+    await _ensure_authorized()
+    return api_client.execute_request("GET", "/v1/assets/clock")
 
 
-@app.tool()
-async def GetAssetParams(symbol: str, account_id: Optional[str] = None) -> Dict[str, Any]:
-    """Inspect trading parameters such as margins and availability flags.
+@mcp.tool()
+async def Exchanges(account_id: str) -> Dict[str, Any]:
+    """
+    Get list of available exchanges with names and mic codes
 
     Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
-        account_id: Optional account to personalise leverage requirements.
+        account_id: Account identifier
 
     Returns:
-        Dict[str, Any]: Trading rules including long/short permissions and collateral.
+        dict: List of exchanges with the following structure:
+            - exchanges (list[dict]): Exchange information
+                - mic (str): Exchange MIC identifier
+                - name (str): Exchange name
     """
-    return await _client.get_asset_params(symbol, account_id)
+    await _ensure_authorized()
+    return api_client.execute_request("GET", "/v1/exchanges")
 
 
-@app.tool()
+@mcp.tool()
+async def GetAsset(symbol: str, account_id: str) -> Dict[str, Any]:
+    """
+    Get information about specific instrument
+
+    Args:
+        symbol: Instrument symbol
+        account_id
+
+    Returns:
+        dict: Instrument information with the following structure:
+            - board (str): Trading mode code
+            - id (str): Instrument identifier
+            - ticker (str): Instrument ticker
+            - mic (str): Exchange MIC identifier
+            - isin (str): Instrument ISIN identifier
+            - type (str): Instrument type
+            - name (str): Instrument name
+            - decimals (int): Number of decimal places in price
+            - min_step (str): Minimum price step. For final price step calculation: min_step/(10^decimals)
+            - lot_size (str): Number of units in lot
+            - expiration_date (dict): Futures expiration date (google.type.Date)
+            - quote_currency (str): Quote currency, may differ from instrument trading mode currency
+    """
+    params: Optional[Dict[str, str]] = {"account_id": account_id} if account_id else None
+    await _ensure_authorized()
+    return api_client.execute_request(
+        "GET",
+        f"/v1/assets/{symbol}",
+        params=params,
+    )
+
+
+@mcp.tool()
+async def GetAssetParams(symbol: str, account_id: str = "") -> Dict[str, Any]:
+    """
+    Get trading parameters for instrument
+
+    Args:
+        symbol: Instrument symbol
+        account_id: (счет) только для проверки информации об акциях на счете
+
+    Returns:
+        dict: Trading parameters with the following structure:
+            - symbol (str): Instrument symbol
+            - account_id (str): Account ID for which trading parameters are selected
+            - tradeable (bool): Are trading operations available
+            - longable (dict): Are long operations available
+                - value (str): Instrument status
+                - halted_days (int): How many days long operations are prohibited (if any)
+            - shortable (dict): Are short operations available
+                - value (str): Instrument status
+                - halted_days (int): How many days short operations are prohibited (if any)
+            - long_risk_rate (str): Risk rate for long operation
+            - long_collateral (dict): Collateral amount to maintain long position (google.type.Money)
+            - short_risk_rate (str): Risk rate for short operation
+            - short_collateral (dict): Collateral amount to maintain short position (google.type.Money)
+            - long_initial_margin (dict): Initial requirements, how much free cash must be in account to open long position, for FORTS accounts equals exchange margin
+            - short_initial_margin (dict): Initial requirements, how much free cash must be in account to open short position, for FORTS accounts equals exchange margin
+    """
+    params: Optional[Dict[str, str]]
+    if account_id and ":" not in account_id:
+        params = {"account_id": account_id}
+    else:
+        params = None
+
+    await _ensure_authorized()
+    return api_client.execute_request(
+        "GET",
+        f"/v1/assets/{symbol}/params",
+        params=params,
+    )
+
+
+@mcp.tool()
 async def OptionsChain(underlying_symbol: str) -> Dict[str, Any]:
-    """Provide the options chain for an underlying instrument.
+    """
+    Get options chain for underlying asset
 
     Args:
-        underlying_symbol: Base asset in `SYMBOL@MIC` format.
+        underlying_symbol: Underlying asset symbol for option
 
     Returns:
-        Dict[str, Any]: Contracts grouped by strikes, expirations, and types.
+        dict: Options chain with the following structure:
+            - symbol (str): Underlying asset symbol for option
+            - options (list[dict]): Option information
+                - symbol (str): Instrument symbol
+                - type (str): Instrument type
+                - contract_size (str): Lot, quantity of underlying asset in instrument
+                - trade_first_day (dict): Trading start date (google.type.Date)
+                - trade_last_day (dict): Trading end date (google.type.Date)
+                - strike (str): Option strike price
+                - multiplier (str): Option multiplier
+                - expiration_first_day (dict): Expiration start date (google.type.Date)
+                - expiration_last_day (dict): Expiration end date (google.type.Date)
     """
-    return await _client.get_options_chain(underlying_symbol)
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/assets/{underlying_symbol}/options")
 
 
-@app.tool()
+@mcp.tool()
 async def Schedule(symbol: str) -> Dict[str, Any]:
-    """Expose the trading sessions configured for an instrument.
+    """
+    Get trading schedule for instrument
 
     Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
+        symbol: Instrument symbol
 
     Returns:
-        Dict[str, Any]: Session intervals with types and timestamps.
+        dict: Trading schedule with the following structure:
+            - symbol (str): Instrument symbol
+            - sessions (list[dict]): Instrument sessions
+                - type (str): Session type
+                - interval (dict): Session interval (google.type.Interval)
     """
-    return await _client.get_asset_schedule(symbol)
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/assets/{symbol}/schedule")
 
 
-@app.tool()
-async def Clock(account_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return the current server time reported by Finam TradeAPI.
-
-    Args:
-        account_id: Optional account context (ignored, kept for compatibility).
-
-    Returns:
-        Dict[str, Any]: Timestamp payload for latency diagnostics.
-    """
-    return await _client.get_clock()
-
-
-@app.tool()
-async def Exchanges(account_id: Optional[str] = None) -> Dict[str, Any]:
-    """List supported exchanges with their MIC codes.
-
-    Args:
-        account_id: Optional account context (ignored, kept for compatibility).
-
-    Returns:
-        Dict[str, Any]: Exchange catalogue containing names and codes.
-    """
-    return await _client.get_exchanges()
-
-
-@app.tool()
-async def GetOrders(account_id: str) -> Dict[str, Any]:
-    """Retrieve active and historical orders for an account.
-
-    Args:
-        account_id: Account identifier to query orders for.
-
-    Returns:
-        Dict[str, Any]: Order states mirroring Finam API response.
-    """
-    return await _client.get_orders(account_id)
-
-
-@app.tool()
-async def GetOrder(account_id: str, order_id: str) -> Dict[str, Any]:
-    """Get a single order with executions and current status.
-
-    Args:
-        account_id: Account identifier the order belongs to.
-        order_id: Exchange order identifier.
-
-    Returns:
-        Dict[str, Any]: Order payload including timestamps and fills.
-    """
-    return await _client.get_order(account_id, order_id)
-
-
-@app.tool()
+@mcp.tool()
 async def CancelOrder(account_id: str, order_id: str) -> Dict[str, Any]:
-    """Submit cancellation for an existing order.
+    """
+    Cancel exchange order
 
     Args:
-        account_id: Account identifier linked to the order.
-        order_id: Identifier of the order to cancel.
+        account_id: Account identifier
+        order_id: Order identifier
 
     Returns:
-        Dict[str, Any]: Cancellation outcome including final status.
+        dict: Cancelled order information with the following structure:
+            - order_id (str): Order identifier
+            - exec_id (str): Execution identifier
+            - status (str): Order status (OrderStatus)
+            - order (dict): Order
+                - account_id (str): Account identifier
+                - symbol (str): Instrument symbol
+                - quantity (str): Quantity in units
+                - side (str): Side (long or short)
+                - type (str): Order type (OrderType)
+                - time_in_force (str): Time in force (TimeInForce)
+                - limit_price (str): Required for limit and stop limit orders
+                - stop_price (str): Required for stop market and stop limit orders
+                - stop_condition (str): Required for stop market and stop limit orders
+                - legs (list[dict]): Required for multi-leg orders
+                - client_order_id (str): Unique order identifier. Auto-generated if not sent (max 20 characters)
+                - valid_before (dict): Conditional order validity period. Filled for ORDER_TYPE_STOP, ORDER_TYPE_STOP_LIMIT orders
+                - comment (str): Order label (max 128 characters)
+            - transact_at (str): Order placement date and time
+            - accept_at (str): Order acceptance date and time
+            - withdraw_at (str): Order cancellation date and time
     """
-    return await _client.cancel_order(account_id, order_id)
+    await _ensure_authorized()
+    return api_client.execute_request("DELETE", f"/v1/accounts/{account_id}/orders/{order_id}")
 
 
-@app.tool()
+@mcp.tool()
+async def GetOrder(account_id: str, order_id: str) -> Dict[str, Any]:
+    """
+    Get information about specific order
+
+    Args:
+        account_id: Account identifier
+        order_id: Order identifier
+
+    Returns:
+        dict: Order information with the following structure:
+            - order_id (str): Order identifier
+            - exec_id (str): Execution identifier
+            - status (str): Order status (OrderStatus)
+            - order (dict): Order
+                - account_id (str): Account identifier
+                - symbol (str): Instrument symbol
+                - quantity (str): Quantity in units
+                - side (str): Side (long or short)
+                - type (str): Order type (OrderType)
+                - time_in_force (str): Time in force (TimeInForce)
+                - limit_price (str): Required for limit and stop limit orders
+                - stop_price (str): Required for stop market and stop limit orders
+                - stop_condition (str): Required for stop market and stop limit orders
+                - legs (list[dict]): Required for multi-leg orders
+                - client_order_id (str): Unique order identifier. Auto-generated if not sent (max 20 characters)
+                - valid_before (dict): Conditional order validity period. Filled for ORDER_TYPE_STOP, ORDER_TYPE_STOP_LIMIT orders
+                - comment (str): Order label (max 128 characters)
+            - transact_at (str): Order placement date and time
+            - accept_at (str): Order acceptance date and time
+            - withdraw_at (str): Order cancellation date and time
+    """
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/accounts/{account_id}/orders/{order_id}")
+
+
+@mcp.tool()
+async def GetOrders(account_id: str) -> Dict[str, Any]:
+    """
+    Get list of orders for account
+
+    Args:
+        account_id: Account identifier
+
+    Returns:
+        dict: List of orders with the following structure:
+            - orders (list[dict]): Orders (OrderState objects)
+                - order_id (str): Order identifier
+                - exec_id (str): Execution identifier
+                - status (str): Order status (OrderStatus)
+                - order (dict): Order
+                - transact_at (str): Order placement date and time
+                - accept_at (str): Order acceptance date and time
+                - withdraw_at (str): Order cancellation date and time
+    """
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/accounts/{account_id}/orders")
+
+
+@mcp.tool()
 async def PlaceOrder(
     account_id: str,
     symbol: str,
-    quantity: Union[str, int, float],
-    side: Union[str, Side],
-    type: Union[str, OrderType],
-    time_in_force: Optional[Union[str, TimeInForce]] = None,
-    limit_price: Optional[Union[str, int, float]] = None,
-    stop_price: Optional[Union[str, int, float]] = None,
-    stop_condition: Optional[Union[str, StopCondition]] = None,
-    valid_before: Optional[Union[str, ValidBefore]] = None,
+    quantity: str,
+    side: str,
+    type: str,
+    time_in_force: str,
+    limit_price: Optional[str] = None,
+    stop_price: Optional[str] = None,
+    stop_condition: Optional[str] = None,
+    legs: Optional[List[Dict[str, Any]]] = None,
     client_order_id: Optional[str] = None,
+    valid_before: Optional[Dict[str, Any]] = None,
     comment: Optional[str] = None,
-    legs: Optional[Iterable[Union[Leg, Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
-    """Place a new order leveraging server-side validation helpers.
+    """
+    Place exchange order
 
     Args:
-        account_id: Finam account that submits the order.
-        symbol: Instrument in `SYMBOL@MIC` format.
-        quantity: Order size in units or lots.
-        side: Buy/sell side (`Side`).
-        type: Order type (`OrderType`).
-        time_in_force: Optional order lifetime policy (`TimeInForce`).
-        limit_price: Limit value for limit/stop-limit orders.
-        stop_price: Trigger price for stop orders.
-        stop_condition: Stop evaluation condition (`StopCondition`).
-        valid_before: Optional validity constraint (`ValidBefore`).
-        client_order_id: Optional custom identifier (max 20 chars).
-        comment: Optional human-friendly note.
-        legs: Optional multi-leg composition for combos.
+        account_id: Account identifier
+        symbol: Instrument symbol
+        quantity: Quantity in units
+        side: Side (long or short)
+        type: Order type (OrderType)
+        time_in_force: Time in force (TimeInForce)
+        limit_price: Required for limit and stop limit orders (optional)
+        stop_price: Required for stop market and stop limit orders (optional)
+        stop_condition: Required for stop market and stop limit orders (optional)
+        legs: Required for multi-leg orders (optional)
+        client_order_id: Unique order identifier. Auto-generated if not sent (max 20 characters) (optional)
+        valid_before: Conditional order validity period. Filled for ORDER_TYPE_STOP, ORDER_TYPE_STOP_LIMIT orders (optional)
+        comment: Order label (max 128 characters) (optional)
 
     Returns:
-        Dict[str, Any]: Finam API response describing the created order.
+        dict: Placed order information with the following structure:
+            - order_id (str): Order identifier
+            - exec_id (str): Execution identifier
+            - status (str): Order status (OrderStatus)
+            - order (dict): Order
+                - account_id (str): Account identifier
+                - symbol (str): Instrument symbol
+                - quantity (str): Quantity in units
+                - side (str): Side (long or short)
+                - type (str): Order type (OrderType)
+                - time_in_force (str): Time in force (TimeInForce)
+                - limit_price (str): Required for limit and stop limit orders
+                - stop_price (str): Required for stop market and stop limit orders
+                - stop_condition (str): Required for stop market and stop limit orders
+                - legs (list[dict]): Required for multi-leg orders
+                - client_order_id (str): Unique order identifier. Auto-generated if not sent (max 20 characters)
+                - valid_before (dict): Conditional order validity period. Filled for ORDER_TYPE_STOP, ORDER_TYPE_STOP_LIMIT orders
+                - comment (str): Order label (max 128 characters)
+            - transact_at (str): Order placement date and time
+            - accept_at (str): Order acceptance date and time
+            - withdraw_at (str): Order cancellation date and time
     """
-    return await _prepare_order(
-        account_id=account_id,
-        symbol=symbol,
-        quantity=quantity,
-        side=side,
-        order_type=type,
-        time_in_force=time_in_force,
-        limit_price=limit_price,
-        stop_price=stop_price,
-        stop_condition=stop_condition,
-        valid_before=valid_before,
-        client_order_id=client_order_id,
-        comment=comment,
-        legs=legs,
+    data: Dict[str, Any] = {
+        "symbol": symbol,
+        "quantity": quantity,
+        "side": side,
+        "type": type,
+        "time_in_force": time_in_force,
+    }
+    if limit_price is not None:
+        data["limit_price"] = limit_price
+    if stop_price is not None:
+        data["stop_price"] = stop_price
+    if stop_condition is not None:
+        data["stop_condition"] = stop_condition
+    if legs is not None:
+        data["legs"] = legs
+    if client_order_id is not None:
+        data["client_order_id"] = client_order_id
+    if valid_before is not None:
+        data["valid_before"] = valid_before
+    if comment is not None:
+        data["comment"] = comment
+
+    await _ensure_authorized()
+    return api_client.execute_request(
+        "POST",
+        f"/v1/accounts/{account_id}/orders",
+        json=data,
     )
 
 
-@app.tool()
-async def LastQuote(symbol: str) -> Dict[str, Any]:
-    """Fetch the most recent quote snapshot for an instrument.
+@mcp.tool()
+async def Clock_MARKET_DATA(account_id: str) -> Dict[str, Any]:
+    """
+    Get server time (ALWAYS USE THIS TOOL IF YOU NEED TO OBTAIN DATA FOR A TIME PERIOD OR QUARTER)
+    FIRST, FETCH interval_end AND HISTORICAL DATA WITH TOOL Clock_MARKET_DATA IF YOU NEED TO RETRIEVE PRICE HISTORY FOR THE LAST QUARTER OR A SPECIFIC TIME PERIOD.
+    NEVER SET interval_end MANUALLY.
 
     Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
+        account_id: Account identifier
 
     Returns:
-        Dict[str, Any]: Bid/ask/last data enriched with OHLC fields.
+        dict: Server time with the following structure:
+            - timestamp (str): Timestamp
     """
-    return await _client.last_quote(symbol)
+    await _ensure_authorized()
+    return api_client.execute_request("GET", "/v1/assets/clock")
 
 
-@app.tool()
-async def OrderBook(symbol: str, depth: int = DEFAULT_DEPTH) -> Dict[str, Any]:
-    """Retrieve order book levels for the instrument.
-
-    Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
-        depth: Desired depth of book on each side.
-
-    Returns:
-        Dict[str, Any]: Ladder of bids and asks with prices and sizes.
-    """
-    return await _client.orderbook(symbol, depth=depth)
-
-
-@app.tool()
-async def LatestTrades(symbol: str) -> Dict[str, Any]:
-    """List the latest exchange trades for the specified instrument.
-
-    Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
-
-    Returns:
-        Dict[str, Any]: Recent trades including price, size, and side.
-    """
-    return await _client.latest_trades(symbol)
-
-
-@app.tool()
+@mcp.tool()
 async def Bars(
     symbol: str,
     timeframe: str,
-    interval_start: Optional[int] = None,
-    interval_end: Optional[int] = None,
-    limit: Optional[int] = None,
+    interval_start: str = "none",
+    interval_end: str = "none",
 ) -> Dict[str, Any]:
-    """Download aggregated price bars for the instrument.
+    """
+    Get data for instrument (aggregated candles)
 
     Args:
-        symbol: Instrument identifier in `SYMBOL@MIC` format.
-        timeframe: Candle timeframe string accepted by Finam API.
-        interval_start: Optional start of the period (Unix seconds).
-        interval_end: Optional end of the period (Unix seconds).
-        limit: Optional maximum number of bars.
+        symbol: Instrument symbol
+        timeframe: Required timeframe (may be "none")
+        interval_start: Start of requested period (may be "none")
+        interval_end: End of requested period (may be "none")
 
     Returns:
-        Dict[str, Any]: Bars payload containing OHLCV series.
+        dict: Historical data with the following structure:
+            - symbol (str): Instrument symbol
+            - bars (list[dict]): Aggregated candle
+                - timestamp (str): Timestamp
+                - open (str): Candle open price
+                - high (str): Candle high price
+                - low (str): Candle low price
+                - close (str): Candle close price
+                - volume (str): Trading volume for candle in units
     """
-    params = GetBarsParams(
-        symbol=symbol,
-        timeframe=timeframe,
-        start_time=interval_start,
-        end_time=interval_end,
-        limit=limit,
+    params: Dict[str, str] = {"timeframe": timeframe}
+    if interval_start != "none":
+        params["interval.start_time"] = str(interval_start)
+    if interval_end != "none":
+        params["interval.end_time"] = str(interval_end)
+
+    await _ensure_authorized()
+    return api_client.execute_request(
+        "GET",
+        f"/v1/instruments/{symbol}/bars",
+        params=params,
     )
-    return await _client.bars(params)
+
+
+@mcp.tool()
+async def LastQuote(symbol: str) -> Dict[str, Any]:
+    """
+    Get latest quote for instrument
+
+    Args:
+        symbol: Instrument symbol
+
+    Returns:
+        dict: Latest quote with the following structure:
+            - symbol (str): Instrument symbol
+            - quote (dict): Last trade price
+                - symbol (str): Instrument symbol
+                - timestamp (str): Timestamp
+                - ask (str): Ask. 0 when no active ask
+                - ask_size (str): Ask size
+                - bid (str): Bid. 0 when no active bid
+                - bid_size (str): Bid size
+                - last (str): Last trade price
+                - last_size (str): Last trade size
+                - volume (str): Daily trade volume
+                - turnover (str): Daily trade turnover
+                - open (str): Open price. Daily
+                - high (str): High price. Daily
+                - low (str): Low price. Daily
+                - close (str): Close price. Daily
+                - change (str): Price change (last minus close)
+                - option (dict): Option information
+    """
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/instruments/{symbol}/quotes/latest")
+
+
+@mcp.tool()
+async def LatestTrades(symbol: str) -> Dict[str, Any]:
+    """
+    Get list of latest trades for instrument
+
+    Args:
+        symbol: Instrument symbol
+
+    Returns:
+        dict: Latest trades with the following structure:
+            - symbol (str): Instrument symbol
+            - trades (list[dict]): List of latest trades
+                - trade_id (str): Trade identifier sent by exchange
+                - mpid (str): Market participant identifier
+                - timestamp (str): Timestamp
+                - price (str): Trade price
+                - size (str): Trade size
+                - side (str): Trade side (buy or sell)
+    """
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/instruments/{symbol}/trades/latest")
+
+
+@mcp.tool()
+async def OrderBook(symbol: str) -> Dict[str, Any]:
+    """
+    Get current order book for instrument
+
+    Args:
+        symbol: Instrument symbol
+
+    Returns:
+        dict: Order book with the following structure:
+            - symbol (str): Instrument symbol
+            - orderbook (dict): Order book
+                - rows (list[dict]): Order book levels (OrderBook.Row)
+    """
+    await _ensure_authorized()
+    return api_client.execute_request("GET", f"/v1/instruments/{symbol}/orderbook")
+
 
 if __name__ == "__main__":
-    try:
-        app.run()
-    finally:
-        import asyncio
-
-        asyncio.run(_client.aclose())
+    mcp.run()
