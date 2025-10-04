@@ -79,29 +79,27 @@ async def _ensure_authorized() -> None:
 
 
 @mcp.tool()
-async def Auth(secret: str) -> Dict[str, Any]:
+async def Auth(secret: str) -> dict:
     """
     Get JWT token from API token
-
+    
     Args:
         secret: API token (secret key)
-
+    
     Returns:
         dict: JWT token information with the following structure:
             - token (str): Received JWT token
     """
-    response = _exchange_secret_for_token(secret)
-    return response
-
+    return api_client.execute_request("POST", "/v1/sessions", json={"secret": secret})
 
 @mcp.tool()
-async def TokenDetails(token: str) -> Dict[str, Any]:
+async def TokenDetails(token: str) -> dict:
     """
     Get information about session token
-
+    
     Args:
         token: JWT token
-
+    
     Returns:
         dict: Token information with the following structure:
             - created_at (str): Creation date and time
@@ -116,24 +114,18 @@ async def TokenDetails(token: str) -> Dict[str, Any]:
             - account_ids (list[str]): Account identifiers
             - readonly (bool): Session and trading accounts marked as readonly
     """
-    await _ensure_authorized()
-    if token:
-        return api_client.execute_request(
-            "POST",
-            "/v1/sessions/details",
-            json={"token": token},
-        )
-    return api_client.execute_request("GET", "/v1/sessions/details")
+    return api_client.execute_request("POST", "/v1/sessions/details", json={"token": token})
 
+# ==================== ACCOUNTS ====================
 
 @mcp.tool()
-async def GetAccount(account_id: str) -> Dict[str, Any]:
+async def GetAccount(account_id: str) -> dict:
     """
     Get information about specific account
-
+    
     Args:
         account_id: Account identifier
-
+    
     Returns:
         dict: Account information with the following structure:
             - account_id (str): Account identifier
@@ -159,62 +151,45 @@ async def GetAccount(account_id: str) -> Dict[str, Any]:
                 - available_cash (str): Own cash available for trading. Includes margin funds
                 - money_reserved (str): Minimum margin (required collateral for open positions)
     """
-    await _ensure_authorized()
-    return api_client.execute_request("GET", f"/v1/accounts/{account_id}")
+    request = api_client.execute_request("GET", f"/v1/accounts/{account_id}")
+
+    return request
 
 
 @mcp.tool()
-async def Trades(
-    account_id: str,
-    limit: str = "none",
-    interval_start: str = "none",
-    interval_end: str = "none",
-) -> Dict[str, Any]:
+async def Trades(account_id: str, limit: str = "none", interval_start: str = "none", interval_end: str = "none") -> dict:
     """
     Get account trade history
-
+    
     Args:
         account_id: Account identifier
         limit: чтобы узнать последние N сделок по счету (may be str or "none")
         interval_start: Start of requested period, Unix epoch time (may be "none")
         interval_end: End of requested period, Unix epoch time (may be "none)
-
+    
     Returns:
         dict: Trade history with the following structure:
             - trades (list[dict]): Account trades (AccountTrade objects)
     """
-    params: Dict[str, str] = {}
-    if limit != "none":
-        params["limit"] = str(limit)
-    if interval_start != "none":
-        params["interval.start_time"] = str(interval_start)
-    if interval_end != "none":
-        params["interval.end_time"] = str(interval_end)
 
-    await _ensure_authorized()
-    return api_client.execute_request(
-        "GET",
-        f"/v1/accounts/{account_id}/trades",
-        params=params or None,
-    )
+    if limit != "none":
+        return api_client.execute_request("GET", f"/v1/accounts/{account_id}/trades/limit={limit}") 
+    if interval_start != "none" and interval_end != "none":
+        return api_client.execute_request("GET", f"/v1/accounts/{account_id}/trades?interval.start_time={interval_start}&interval.end_time={interval_end}")
+    return api_client.execute_request("GET", f"/v1/accounts/{account_id}/trades")
 
 
 @mcp.tool()
-async def Transactions(
-    account_id: str,
-    limit: str = "none",
-    interval_start: str = "none",
-    interval_end: str = "none",
-) -> Dict[str, Any]:
+async def Transactions(account_id: str, limit: str = "none", interval_start: str = "none", interval_end: str = "none") -> dict:
     """
     Get list of account transactions
-
+    
     Args:
         account_id: Account identifier
         limit: чтобы узнать последние N транзакций по счету (may be str or "none")
         interval_start: Start of requested period, Unix epoch time (may be "none")
         interval_end: End of requested period, Unix epoch time (may be "none)
-
+    
     Returns:
         dict: Transactions with the following structure:
             - transactions (list[dict]): Account transactions
@@ -227,66 +202,56 @@ async def Transactions(
                 - transaction_category (str): Transaction category from TransactionCategory
                 - transaction_name (str): Transaction name
     """
-    params: Dict[str, str] = {}
     if limit != "none":
-        params["limit"] = str(limit)
-    if interval_start != "none":
-        params["interval.start_time"] = str(interval_start)
-    if interval_end != "none":
-        params["interval.end_time"] = str(interval_end)
-
-    await _ensure_authorized()
-    return api_client.execute_request(
-        "GET",
-        f"/v1/accounts/{account_id}/transactions",
-        params=params or None,
-    )
-
+        return api_client.execute_request("GET", f"/v1/accounts/{account_id}/transactions/limit={limit}") 
+    if interval_start != "none" and interval_end != "none":
+        return api_client.execute_request("GET", f"/v1/accounts/{account_id}/transactions?interval.start_time={interval_start}&interval.end_time={interval_end}")
+    return api_client.execute_request("GET", f"/v1/accounts/{account_id}/transactions")
 
 @mcp.tool()
-async def Clock_ACCOUNTS(account_id: str) -> Dict[str, Any]:
+async def Clock_ACCOUNTS(account_id: str) -> dict:
     """
     Get server time (ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ТУЛ Clock_ACCOUNTS ЕСЛИ ТРЕБУЕТСЯ УЗНАТЬ ТРАНЗАКЦИИ ИЛИ СДЕЛКИ ВО ВРЕМЕННОМ ПРОМЕЖУТКЕ, КВАРТАЛЕ И ТД)
     ДЛЯ КВАРТАЛА И ВРЕМЕННОГО ПРОМЕЖТУКА ДЛЯ НАЧАЛА УЗНАЙ ТЕКУЩЕЕ ВРЕМЯ interval_end С ПОМОЩЬЮ ИНСТРУМЕНТА Clock_ACCOUNTS
-
+    
     Args:
         account_id: Account identifier
-
+    
     Returns:
         dict: Server time with the following structure:
             - timestamp (str): Timestamp
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", "/v1/assets/clock")
+
+# ==================== INSTRUMENTS ====================
 
 
 @mcp.tool()
-async def Exchanges(account_id: str) -> Dict[str, Any]:
+async def Exchanges(account_id: str) -> dict:
     """
     Get list of available exchanges with names and mic codes
-
+    
     Args:
         account_id: Account identifier
-
+    
     Returns:
         dict: List of exchanges with the following structure:
             - exchanges (list[dict]): Exchange information
                 - mic (str): Exchange MIC identifier
                 - name (str): Exchange name
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", "/v1/exchanges")
 
 
 @mcp.tool()
-async def GetAsset(symbol: str, account_id: str) -> Dict[str, Any]:
+async def GetAsset(symbol: str, account_id: str) -> dict:
     """
     Get information about specific instrument
-
+    
     Args:
         symbol: Instrument symbol
         account_id
-
+    
     Returns:
         dict: Instrument information with the following structure:
             - board (str): Trading mode code
@@ -302,23 +267,18 @@ async def GetAsset(symbol: str, account_id: str) -> Dict[str, Any]:
             - expiration_date (dict): Futures expiration date (google.type.Date)
             - quote_currency (str): Quote currency, may differ from instrument trading mode currency
     """
-    params: Optional[Dict[str, str]] = {"account_id": account_id} if account_id else None
-    await _ensure_authorized()
-    return api_client.execute_request(
-        "GET",
-        f"/v1/assets/{symbol}",
-        params=params,
-    )
+
+    return api_client.execute_request("GET", f"/v1/assets/{symbol}?account_id={account_id}")
 
 
 @mcp.tool()
-async def GetAssetParams(symbol: str, account_id: str = "") -> Dict[str, Any]:
+async def GetAssetParams(symbol: str, account_id: str = "") -> dict:
     """
     Get trading parameters for instrument
 
     Args:
         symbol: Instrument symbol
-        account_id: (счет) только для проверки информации об акциях на счете
+        account_id: (счет) только для проверки информации об акциях на счете 
 
     Returns:
         dict: Trading parameters with the following structure:
@@ -338,28 +298,20 @@ async def GetAssetParams(symbol: str, account_id: str = "") -> Dict[str, Any]:
             - long_initial_margin (dict): Initial requirements, how much free cash must be in account to open long position, for FORTS accounts equals exchange margin
             - short_initial_margin (dict): Initial requirements, how much free cash must be in account to open short position, for FORTS accounts equals exchange margin
     """
-    params: Optional[Dict[str, str]]
-    if account_id and ":" not in account_id:
-        params = {"account_id": account_id}
-    else:
-        params = None
 
-    await _ensure_authorized()
-    return api_client.execute_request(
-        "GET",
-        f"/v1/assets/{symbol}/params",
-        params=params,
-    )
+    if ":" not in account_id:
+        return api_client.execute_request("GET", f"/v1/assets/{symbol}/params?account_id={account_id}")
+    return api_client.execute_request("GET", f"/v1/assets/{symbol}/params")
 
 
 @mcp.tool()
-async def OptionsChain(underlying_symbol: str) -> Dict[str, Any]:
+async def OptionsChain(underlying_symbol: str) -> dict:
     """
     Get options chain for underlying asset
-
+    
     Args:
         underlying_symbol: Underlying asset symbol for option
-
+    
     Returns:
         dict: Options chain with the following structure:
             - symbol (str): Underlying asset symbol for option
@@ -374,18 +326,18 @@ async def OptionsChain(underlying_symbol: str) -> Dict[str, Any]:
                 - expiration_first_day (dict): Expiration start date (google.type.Date)
                 - expiration_last_day (dict): Expiration end date (google.type.Date)
     """
-    await _ensure_authorized()
+
     return api_client.execute_request("GET", f"/v1/assets/{underlying_symbol}/options")
 
 
 @mcp.tool()
-async def Schedule(symbol: str) -> Dict[str, Any]:
+async def Schedule(symbol: str) -> dict:
     """
     Get trading schedule for instrument
-
+    
     Args:
         symbol: Instrument symbol
-
+    
     Returns:
         dict: Trading schedule with the following structure:
             - symbol (str): Instrument symbol
@@ -393,19 +345,19 @@ async def Schedule(symbol: str) -> Dict[str, Any]:
                 - type (str): Session type
                 - interval (dict): Session interval (google.type.Interval)
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", f"/v1/assets/{symbol}/schedule")
 
+# ==================== ORDERS ====================
 
 @mcp.tool()
-async def CancelOrder(account_id: str, order_id: str) -> Dict[str, Any]:
+async def CancelOrder(account_id: str, order_id: str) -> dict:
     """
     Cancel exchange order
-
+    
     Args:
         account_id: Account identifier
         order_id: Order identifier
-
+    
     Returns:
         dict: Cancelled order information with the following structure:
             - order_id (str): Order identifier
@@ -429,19 +381,18 @@ async def CancelOrder(account_id: str, order_id: str) -> Dict[str, Any]:
             - accept_at (str): Order acceptance date and time
             - withdraw_at (str): Order cancellation date and time
     """
-    await _ensure_authorized()
     return api_client.execute_request("DELETE", f"/v1/accounts/{account_id}/orders/{order_id}")
 
 
 @mcp.tool()
-async def GetOrder(account_id: str, order_id: str) -> Dict[str, Any]:
+async def GetOrder(account_id: str, order_id: str) -> dict:
     """
     Get information about specific order
-
+    
     Args:
         account_id: Account identifier
         order_id: Order identifier
-
+    
     Returns:
         dict: Order information with the following structure:
             - order_id (str): Order identifier
@@ -465,18 +416,17 @@ async def GetOrder(account_id: str, order_id: str) -> Dict[str, Any]:
             - accept_at (str): Order acceptance date and time
             - withdraw_at (str): Order cancellation date and time
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", f"/v1/accounts/{account_id}/orders/{order_id}")
 
 
 @mcp.tool()
-async def GetOrders(account_id: str) -> Dict[str, Any]:
+async def GetOrders(account_id: str) -> dict:
     """
     Get list of orders for account
-
+    
     Args:
         account_id: Account identifier
-
+    
     Returns:
         dict: List of orders with the following structure:
             - orders (list[dict]): Orders (OrderState objects)
@@ -488,7 +438,6 @@ async def GetOrders(account_id: str) -> Dict[str, Any]:
                 - accept_at (str): Order acceptance date and time
                 - withdraw_at (str): Order cancellation date and time
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", f"/v1/accounts/{account_id}/orders")
 
 
@@ -500,17 +449,17 @@ async def PlaceOrder(
     side: str,
     type: str,
     time_in_force: str,
-    limit_price: Optional[str] = None,
-    stop_price: Optional[str] = None,
-    stop_condition: Optional[str] = None,
-    legs: Optional[List[Dict[str, Any]]] = None,
-    client_order_id: Optional[str] = None,
-    valid_before: Optional[Dict[str, Any]] = None,
-    comment: Optional[str] = None,
-) -> Dict[str, Any]:
+    limit_price: str = None,
+    stop_price: str = None,
+    stop_condition: str = None,
+    legs: list = None,
+    client_order_id: str = None,
+    valid_before: dict = None,
+    comment: str = None
+) -> dict:
     """
     Place exchange order
-
+    
     Args:
         account_id: Account identifier
         symbol: Instrument symbol
@@ -525,7 +474,7 @@ async def PlaceOrder(
         client_order_id: Unique order identifier. Auto-generated if not sent (max 20 characters) (optional)
         valid_before: Conditional order validity period. Filled for ORDER_TYPE_STOP, ORDER_TYPE_STOP_LIMIT orders (optional)
         comment: Order label (max 128 characters) (optional)
-
+    
     Returns:
         dict: Placed order information with the following structure:
             - order_id (str): Order identifier
@@ -549,12 +498,12 @@ async def PlaceOrder(
             - accept_at (str): Order acceptance date and time
             - withdraw_at (str): Order cancellation date and time
     """
-    data: Dict[str, Any] = {
+    data = {
         "symbol": symbol,
         "quantity": quantity,
         "side": side,
         "type": type,
-        "time_in_force": time_in_force,
+        "time_in_force": time_in_force
     }
     if limit_price is not None:
         data["limit_price"] = limit_price
@@ -570,49 +519,43 @@ async def PlaceOrder(
         data["valid_before"] = valid_before
     if comment is not None:
         data["comment"] = comment
+    
+    return api_client.execute_request("POST", f"/v1/accounts/{account_id}/orders", json=data)
 
-    await _ensure_authorized()
-    return api_client.execute_request(
-        "POST",
-        f"/v1/accounts/{account_id}/orders",
-        json=data,
-    )
-
+# ==================== MARKET_DATA ====================
 
 @mcp.tool()
-async def Clock_MARKET_DATA(account_id: str) -> Dict[str, Any]:
+async def Clock_MARKET_DATA(account_id: str) -> dict:
     """
     Get server time (ALWAYS USE THIS TOOL IF YOU NEED TO OBTAIN DATA FOR A TIME PERIOD OR QUARTER)
     FIRST, FETCH interval_end AND HISTORICAL DATA WITH TOOL Clock_MARKET_DATA IF YOU NEED TO RETRIEVE PRICE HISTORY FOR THE LAST QUARTER OR A SPECIFIC TIME PERIOD.
     NEVER SET interval_end MANUALLY.
-
+    
     Args:
         account_id: Account identifier
-
+    
     Returns:
         dict: Server time with the following structure:
             - timestamp (str): Timestamp
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", "/v1/assets/clock")
-
 
 @mcp.tool()
 async def Bars(
     symbol: str,
     timeframe: str,
     interval_start: str = "none",
-    interval_end: str = "none",
-) -> Dict[str, Any]:
+    interval_end: str = "none"
+) -> dict:
     """
     Get data for instrument (aggregated candles)
-
+    
     Args:
         symbol: Instrument symbol
         timeframe: Required timeframe (may be "none")
         interval_start: Start of requested period (may be "none")
-        interval_end: End of requested period (may be "none")
-
+        interval_end: End of requested period (may be "none")  
+    
     Returns:
         dict: Historical data with the following structure:
             - symbol (str): Instrument symbol
@@ -624,28 +567,23 @@ async def Bars(
                 - close (str): Candle close price
                 - volume (str): Trading volume for candle in units
     """
-    params: Dict[str, str] = {"timeframe": timeframe}
+    params = {"timeframe": timeframe}
     if interval_start != "none":
-        params["interval.start_time"] = str(interval_start)
+        params["interval_start"] = interval_start
     if interval_end != "none":
-        params["interval.end_time"] = str(interval_end)
-
-    await _ensure_authorized()
-    return api_client.execute_request(
-        "GET",
-        f"/v1/instruments/{symbol}/bars",
-        params=params,
-    )
+        params["interval_end"] = interval_end
+        return api_client.execute_request("GET", f"/v1/instruments/{symbol}/bars?timeframe={timeframe}&interval.start_time={interval_start}&interval.end_time={interval_end}") 
+    return api_client.execute_request("GET", f"/v1/instruments/{symbol}/bars")
 
 
 @mcp.tool()
-async def LastQuote(symbol: str) -> Dict[str, Any]:
+async def LastQuote(symbol: str) -> dict:
     """
     Get latest quote for instrument
-
+    
     Args:
         symbol: Instrument symbol
-
+    
     Returns:
         dict: Latest quote with the following structure:
             - symbol (str): Instrument symbol
@@ -667,18 +605,17 @@ async def LastQuote(symbol: str) -> Dict[str, Any]:
                 - change (str): Price change (last minus close)
                 - option (dict): Option information
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", f"/v1/instruments/{symbol}/quotes/latest")
 
 
 @mcp.tool()
-async def LatestTrades(symbol: str) -> Dict[str, Any]:
+async def LatestTrades(symbol: str) -> dict:
     """
     Get list of latest trades for instrument
-
+    
     Args:
         symbol: Instrument symbol
-
+    
     Returns:
         dict: Latest trades with the following structure:
             - symbol (str): Instrument symbol
@@ -690,25 +627,23 @@ async def LatestTrades(symbol: str) -> Dict[str, Any]:
                 - size (str): Trade size
                 - side (str): Trade side (buy or sell)
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", f"/v1/instruments/{symbol}/trades/latest")
 
 
 @mcp.tool()
-async def OrderBook(symbol: str) -> Dict[str, Any]:
+async def OrderBook(symbol: str) -> dict:
     """
     Get current order book for instrument
-
+    
     Args:
         symbol: Instrument symbol
-
+    
     Returns:
         dict: Order book with the following structure:
             - symbol (str): Instrument symbol
             - orderbook (dict): Order book
                 - rows (list[dict]): Order book levels (OrderBook.Row)
     """
-    await _ensure_authorized()
     return api_client.execute_request("GET", f"/v1/instruments/{symbol}/orderbook")
 
 
