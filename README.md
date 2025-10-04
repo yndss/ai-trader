@@ -1,4 +1,4 @@
-# \[Trader\] Finam x HSE Trade AI Hack - Baseline
+# \[Trader\] Finam x HSE Trade AI Hack - Professor MIREArti Version!
 
 > **AI-ассистент трейдера** на базе Finam TradeAPI
 > Базовый шаблон для хакатона по созданию интеллектуального помощника для трейдинга
