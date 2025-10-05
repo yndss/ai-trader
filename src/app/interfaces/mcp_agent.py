@@ -26,9 +26,9 @@ if ENV_PATH.exists():
 else:
     load_dotenv()
 
-COMETAPI_BASE_URL = os.getenv("COMETAPI_BASE_URL", "https://api.cometapi.com/v1")
-MODEL_ID = os.getenv("MODEL_ID", "qwen2.5-32b-instruct")
-COMET_API_KEY = os.getenv("COMET_API_KEY", "sk-eda8aMPSz9nfgZwaVTAvkkLZtXMiiyLMLbna3GixHlfa7G2K")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1")
+MODEL_ID = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_API_KEY = os.getenv("COMET_API_KEY", "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")
  
 
 
@@ -628,8 +628,8 @@ def build_llm() -> ChatOpenAI:
     """Создает и возвращает настроенную модель LLM"""
     return ChatOpenAI(
         model=MODEL_ID,
-        base_url=COMETAPI_BASE_URL,
-        api_key=COMET_API_KEY,
+        base_url=OPENROUTER_BASE_URL,
+        api_key=OPENROUTER_API_KEY,
         temperature=0,
     )
 
