@@ -28,7 +28,7 @@ else:
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1")
 MODEL_ID = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-OPENROUTER_API_KEY = os.getenv("COMET_API_KEY", "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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
  
 
 
