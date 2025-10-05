@@ -79,19 +79,17 @@ def _env_value(*names: str, default: Optional[str] = None) -> Optional[str]:
 
 
 COMET_BASE_URL = _env_value(
-    "COMET_BASE_URL",
     "OPENROUTER_BASE",
     "LLM_BASE_URL",
     default="https://api.cometapi.com/v1",
 )
 COMET_MODEL_ID = _env_value(
-    "COMET_MODEL_ID",
     "OPENROUTER_MODEL",
     "LLM_MODEL_ID",
     "LLM_MODEL",
     default="qwen2.5-32b-instruct",
 )
-COMET_API_KEY = _env_value("COMET_API_KEY", "OPENROUTER_API_KEY", "LLM_API_KEY")
+COMET_API_KEY = _env_value("OPENROUTER_API_KEY", "LLM_API_KEY")
 
 # ---------------------------------------------------------------------------
 # Логирование вызовов инструментов
