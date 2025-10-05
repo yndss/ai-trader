@@ -628,7 +628,7 @@ def build_llm() -> ChatOpenAI:
     """Создает и возвращает настроенную модель LLM"""
     return ChatOpenAI(
         model=MODEL_ID,
-        base_url=OPENROUTER_BASE_URL,
+        base_url=OPENROUTER_BASE,
         api_key=OPENROUTER_API_KEY,
         temperature=0,
     )
